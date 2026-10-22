@@ -18,13 +18,16 @@ Agent 在受限工具集内自主调用工具完成多轮任务，所有工具�
 - **JWT 无状态鉴权**：`python-jose` 签发 HS256，`Depends(get_current_user)` 统一解析，多端可用
 - **会话隔离**：每个会话绑定 `user_id`，任何涉及 session 的操作都先做越权校验（IDOR 防护）
 - **工具权限闸门** `permission.decide()`：三态裁决 `ALLOW / DENY / ASK`，白名单 + shell 元字符过滤 + 路径根隔离
-- **多家 LLM 供应商热切换**：`providers.py` 维护预设目录，8 家 + 自定义，无需改代码
+- **多家 LLM 供应商热切换**：`providers.py` 维护预设目录，9 家 + 自定义（含 Qwen-VL 视觉模型），前端可视化切换
 - **LangGraph 编排层**：`StateGraph` + `PyMySQLSaver` 检查点（对话历史落 MySQL，跨轮记忆）
 - **上下文压缩**：早期消息由 LLM 摘要进 `session.summary`，上下文不随对话无限增长
 - **真实 token 记账**：从 `AIMessage.usage_metadata` 累加，配额限流真正生效
 - **审计落库**：每次裁决写入 `audit_logs`（subject / 决策）
 - **REST API + Web/PWA 前端**：FastAPI 提供 API，同进程托管原生 JS 单页应用（SSE 流式）
 - **容器化部署**：Dockerfile + Docker Compose 编排 app + MySQL
+- **前端可视化模型切换**：点模型胶囊切换 9 家供应商 + 自定义（Base URL / 模型名 / 密钥），支持图片的模型带标注
+- **图片/视频上传（多模态）**：上传端点 + 缩略图 / Ctrl+V 粘贴；模型能力检测——纯文本模型明确返回「模型不支持」，不伪装成 agent 错误
+- **SSE 流式 JSON 编码**：载荷 JSON 化，修复 AI 回复空行切断 SSE 帧导致后半段丢失
 
 ---
 
@@ -104,9 +107,8 @@ agent_demo/
 ├── docker-compose.yml    # app + mysql 编排
 ├── .dockerignore         # 构建上下文排除（config.json/.env/缓存/_deprecated）
 ├── .env.example          # 环境变量模板（cp .env.example .env）
-├── .env.example          # 环境变量模板
 ├── api/                  # FastAPI 路由层
-│   ├── app.py  auth.py  chat.py  config.py  deps.py  schemas.py
+│   ├── app.py  auth.py  chat.py  config.py  deps.py  schemas.py  upload.py
 ├── core/                 # Agent 编排 + 权限 + 工具
 │   ├── agent.py  agent_graph.py  agent_state.py  context.py
 │   ├── tools.py  permission.py  prompt.py  providers.py
@@ -158,6 +160,9 @@ LangGraph 检查点三表（`checkpoints` / `checkpoint_writes` / `checkpoint_bl
 | GET | `/api/v1/sessions/{id}/messages` | 会话历史（从 checkpointer 恢复） |
 | GET | `/api/v1/sessions/{id}/status` | 消息条数 + 上下文压缩状态 |
 | GET | `/api/v1/config` | 运行配置：provider / model / 工具 / 权限规则（**不含 api_key**） |
+| GET | `/api/v1/providers` | 可选模型列表（含 supports_images 标注） |
+| POST | `/api/v1/config` | 切换供应商/模型（热切换 + 持久化；custom 需 base_url + model） |
+| POST | `/api/v1/upload` | 图片/视频上传（含模型能力闸门，不支持返回 400） |
 | POST | `/api/v1/chat` | 同步对话 |
 | POST | `/api/v1/chat/stream` | SSE 流式对话（增量输出） |
 | GET | `/health` | 健康检查 |
@@ -168,10 +173,11 @@ LangGraph 检查点三表（`checkpoints` / `checkpoint_writes` / `checkpoint_bl
 
 ## 七、多模型供应商配置
 
-`core/providers.py` 预设 8 家 + 自定义入口，全部走 OpenAI 兼容协议：
+`core/providers.py` 预设 9 家 + 自定义入口，全部走 OpenAI 兼容协议：
 
 | provider 值 | 名称 | base_url |
 |---|---|---|
+| `qwen_vl` | Qwen 视觉模型（支持图片） | `https://api-inference.modelscope.cn/v1` |
 | `modelscope` | 魔搭 ModelScope（Qwen） | `https://api-inference.modelscope.cn/v1` |
 | `deepseek` | DeepSeek | `https://api.deepseek.com/v1` |
 | `doubao` | 豆包 火山方舟 | `https://ark.cn-beijing.volces.com/api/v3` |
@@ -251,21 +257,10 @@ pytest tests/
 
 ## 十、待完善 / 生产化清单（诚实标注）
 
-以下为代码审查（2026-10-20）发现、按严重级别排序的真实待办。标注 ✅ 的已完成。
-
-### 🔴 P0 上线阻断
-
-- [ ] **JWT 密钥有可猜测的 fallback**：`api/deps.py:20` 在 `AGENT_JWT_SECRET` 缺失时回落
-      `"dev-only-insecure-secret-change-me"`，而 `docker-compose.yml` 未注入该变量。
-      攻击者用源码里的公开默认值即可伪造任意用户 token → 账户接管。
-      **修法**：启动即校验，缺失则拒绝启动；compose 必填。
+以下为代码审查发现、按严重级别排序的真实待办；已修复项已移入下方「已完成」。
 
 ### 🟠 P1 多租户场景下真实可达
 
-- [ ] **文件工具无租户隔离**：`core/tools.py` 的 `ROOT` 是全局单一 `workspace/`，所有租户共享。
-      用户 A 写入的文件可被用户 B 通过提示词读写。**修法**：按 `user_id` 建 `workspace/{user_id}/` 子目录。
-- [ ] **审计日志缺用户上下文**：`permission.decide()` 无 `user_id/session_id` 入参，
-      `audit_logs` 对应列恒为 NULL，多租户下无法追溯责任人。**修法**：把用户身份透传进 `decide → audit`。
 - [ ] **配额检查与记账非原子**：`check_quota()`（读）与 `record_usage()`（写）无行锁，
       并发请求可同时通过校验、同时跑 LLM，配额被超出 N 倍。**修法**：`SELECT ... FOR UPDATE` 或带条件原子扣减。
 
@@ -293,8 +288,11 @@ pytest tests/
       `ChatResponse(reply: str)` 序列化失败。**修法**：`content or ""`。
 - [ ] **`asyncio.get_event_loop()` 已弃用**：改用 `get_running_loop()`。
 
-### ✅ 已完成（曾列入路线图）
+### ✅ 已完成（曾列入路线图 / 本轮已修）
 
+- ✅ JWT fail-fast：`AGENT_JWT_SECRET` 缺失即拒绝启动，无可猜测 fallback（原 P0）
+- ✅ 文件工具租户隔离：`contextvars` 注入身份，文件落到 `workspace/{user_id}/`（原 P1）
+- ✅ 审计日志归属用户：`decide()` 透传 user_id/session_id 到审计（原 P1）
 - ✅ 审计落库（`storage/audit.py`，`decide()` 旁路写入，失败不影响裁决）
 - ✅ 真实 token 记账（从 `usage_metadata` 提取，配额真正生效）
 - ✅ FastAPI REST API 层（含 SSE 流式）
@@ -302,6 +300,10 @@ pytest tests/
 - ✅ 历史回看 + 上下文压缩状态展示
 - ✅ Docker 容器化部署（Compose 编排 app + MySQL）
 - ✅ 跨平台：依赖全纯 Python，Linux 优先部署
+- ✅ 前端可视化模型切换（9 家 + 自定义，含 Qwen-VL）
+- ✅ 图片/视频上传 + 模型能力检测（纯文本模型明确返回「模型不支持」）
+- ✅ Ctrl+V 粘贴图片 + 缩略图预览
+- ✅ SSE 流式 JSON 编码（修复空行切断帧）
 
 ### 📋 路线图（未开始）
 
