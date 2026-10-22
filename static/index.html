@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <!-- viewport：让页面在手机上按设备宽度渲染，是响应式（responsive）的前提 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Agent 平台</title>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <!-- ========== 登录 / 注册界面（无 token 时显示） ========== -->
+  <div id="auth" style="display:none">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <span class="logo">◆</span>
+        <h2>AI Agent 平台</h2>
+      </div>
+      <input id="auth-user" placeholder="用户名" />
+      <input id="auth-pass" type="password" placeholder="密码" />
+      <div class="auth-actions">
+        <button id="btn-login" class="primary">登录</button>
+        <button id="btn-register" class="ghost">注册</button>
+      </div>
+      <div id="auth-msg" class="error"></div>
+    </div>
+  </div>
+
+  <!-- ========== 主界面（有 token 时显示） ========== -->
+  <div id="app" style="display:none">
+    <!-- ---------- 左侧栏 ---------- -->
+    <aside>
+      <!-- 顶部：品牌 + 新建会话 -->
+      <div class="sidebar-top">
+        <div class="brand">
+          <span class="logo">◆</span>
+          <span class="brand-name">AI Agent</span>
+        </div>
+        <button id="btn-new" class="new-session">
+          <span class="plus">+</span> 新会话
+        </button>
+      </div>
+
+      <!-- 会话分组：标题带折叠箭头 + 数量 -->
+      <div class="nav-section">
+        <div class="section-header">
+          <span class="chevron">▾</span>
+          <span>会话</span>
+          <span class="count" id="session-count">(0)</span>
+        </div>
+        <div id="session-list"></div>
+      </div>
+
+      <!-- 底部：当前用户 + 登出 -->
+      <div class="sidebar-bottom">
+        <div class="user-chip">
+          <span class="avatar">◆</span>
+          <span class="user-name" id="user-name">已登录</span>
+        </div>
+        <button id="btn-logout" class="logout">登出</button>
+      </div>
+    </aside>
+
+      <!-- ---------- 右侧主区 ---------- -->
+      <main>
+        <!-- 顶栏：当前会话标题 + 上下文状态 -->
+        <header class="topbar">
+          <div class="chat-title" id="chat-title">新会话</div>
+          <div class="chat-meta" id="chat-meta"></div>
+        </header>
+
+        <!-- 消息区 + 空状态提示（chat-body 用 relative 让提示语居中覆盖） -->
+        <div class="chat-body">
+          <div id="messages"></div>
+          <div id="empty-hint" class="empty-hint">有什么可以帮你的？</div>
+        </div>
+
+        <!-- 输入区：圆角卡片，Enter 发送 / Shift+Enter 换行 -->
+        <div class="composer-wrap">
+          <div class="attach-preview" id="attach-preview"></div>
+          <div class="composer">
+            <button class="icon-btn" id="btn-attach" title="上传图片/视频">+</button>
+            <input type="file" id="file-input" accept="image/*,video/*" multiple hidden />
+            <button class="pill" id="pill-perm" title="查看权限裁决规则">默认权限 <span class="chev">⌄</span></button>
+            <textarea id="input" rows="1" placeholder="输入消息，回车发送"></textarea>
+            <button class="pill pill-model" id="pill-model" title="查看当前模型">
+              <span class="spark">✦</span> <span id="model-name">加载中…</span> <span class="chev">⌄</span>
+            </button>
+            <button class="send-btn" id="btn-send" title="发送">↑</button>
+          </div>
+
+          <!-- 权限详情浮层 -->
+          <div class="popover" id="pop-perm" hidden>
+            <h4>权限裁决</h4>
+            <p class="pop-line" id="perm-mode"></p>
+            <p class="pop-label">命令白名单（直接放行）</p>
+            <ul id="perm-white"></ul>
+            <p class="pop-label">文件工具</p>
+            <p class="pop-line">仅允许 <code>workspace/</code> 目录内</p>
+            <p class="pop-label">其他工具</p>
+            <p class="pop-line">默认拒绝</p>
+          </div>
+
+          <!-- 模型详情浮层 -->
+          <div class="popover" id="pop-model" hidden>
+            <h4>当前模型</h4>
+            <p class="pop-line" id="model-detail"></p>
+            <p class="pop-label">切换模型</p>
+            <ul id="model-options" class="model-options"></ul>
+            <div class="custom-form" id="custom-form" hidden>
+              <input id="custom-base" placeholder="Base URL，如 https://api.xxx.com/v1" />
+              <input id="custom-model" placeholder="模型名，如 gpt-4o-mini" />
+              <input id="custom-key" type="password" placeholder="API Key（可选）" />
+              <button id="btn-custom-ok" class="primary">使用自定义模型</button>
+            </div>
+            <p class="pop-line pop-warn">切换后该服务商需有可用密钥，否则对话会调用失败</p>
+            <p class="pop-label">已注册工具</p>
+            <ul id="model-tools"></ul>
+          </div>
+        </div>
+      </main>
+  </div>
+
+  <!-- type="module"：以 ES Module 方式加载，app.js 里才能用 import 语法 -->
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

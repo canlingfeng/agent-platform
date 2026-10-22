@@ -1,0 +1,19 @@
+config.json
+__pycache__/
+.pytest_cache/
+workspace/
+*.orig
+*.bak
+*.bak2
+.env
+
+# 覆盖 .env.bak.xxx / .env.local 这类变体（含密钥）
+# ⚠️ 取反规则 `!.env.example` 必须写在 `.env.*` 之后，否则不生效
+.env.*
+!.env.example
+*.log
+*.pem
+*.key
+.venv/
+venv/
+_diag_uvicorn.py

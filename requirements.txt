@@ -1,0 +1,39 @@
+# ============================================================
+# agent_platform · 依赖清单
+# 版本号取自开发环境实测通过的组合（2026-10），clone 后直接 pip 可复现
+# 安装：pip install -r requirements.txt
+#
+# 注：原 gradio 依赖已移除——Gradio 界面（webui.py）已于 2026-10-21
+# 归档到 _deprecated/，全项目确认无其他引用。若需恢复该界面，
+# 先把 _deprecated/webui.py 移回项目根，再单独 `pip install gradio`。
+# ============================================================
+
+# ---- Agent 编排（LangGraph：StateGraph + Checkpointer）----
+langgraph==1.2.14
+langgraph-checkpoint==4.2.0
+langgraph-checkpoint-mysql==3.0.0
+
+# ---- LLM 客户端（OpenAI 兼容协议，一套客户端打通多家供应商）----
+langchain-core==1.6.9
+langchain-openai==1.7.0
+
+# ---- 数据库驱动（纯 Python，Windows/Linux 免编译）----
+pymysql==1.2.3
+
+# ---- 密码哈希（自适应慢哈希，自带 salt）----
+bcrypt==3.2.0
+
+# ---- HTTP / 工具依赖 ----
+requests==2.31.0
+httpx==0.28.1
+
+# ---- REST API（FastAPI 后端）----
+fastapi==0.141.1
+uvicorn==0.52.3
+python-jose==3.5.0
+# .env 加载：让 `python run.py` 与 `docker compose up` 行为一致
+# （compose 会自动读 .env，裸跑 Python 不会；且不覆盖已有环境变量）
+python-dotenv==1.0.1
+
+# ---- 测试 ----
+pytest==7.4.0

@@ -1,0 +1,9 @@
+{
+  "name": "AI Agent 平台",
+  "short_name": "Agent",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#1a73e8",
+  "description": "多租户 AI Agent 对话平台"
+}

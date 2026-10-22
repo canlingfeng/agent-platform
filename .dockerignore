@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.git/
+.env
+config.json
+*.bak
+*.bak2
+*.orig
+workspace/
+tests/
+# 已废弃文件归档：不进镜像（webui.py 还在用 gradio，排除后可省掉整个依赖）
+_deprecated/

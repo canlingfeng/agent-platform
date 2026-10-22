@@ -1,0 +1,55 @@
+# ============================================================
+# agent_platform · app + mysql 编排
+# 用法：cp .env.example .env 填值 → docker compose up -d --build
+# ============================================================
+services:
+  db:
+    image: mysql:8.4                 # 与本机 8.4.11 LTS 同大版本
+    container_name: agent_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: agent_platform
+      MYSQL_USER: ${AGENT_DB_USER}        # 官方镜像自动建用户并授权该库
+      MYSQL_PASSWORD: ${AGENT_DB_PASSWORD}
+      TZ: UTC
+    volumes:
+      - mysql_data:/var/lib/mysql                                  # 数据持久化
+      - ./schema.sql:/docker-entrypoint-initdb.d/02-schema.sql:ro   # 首次启动自动建表
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1",
+             "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    # ⚠️ 默认注释：你本机已装了 MySQL 占着 3306，映射会报 port already allocated。
+    # app 容器走服务名 db 访问，不需要宿主端口；只有想用 Navicat 连容器库时才打开。
+    # 新（改为启用，用 13306 避开本机 3306）：
+    ports:
+      - "127.0.0.1:13306:3306"
+  app:
+    build: .
+    container_name: agent_app
+    restart: unless-stopped
+    environment:
+      # 关键：容器间用【服务名】寻址，不能写 127.0.0.1（那是容器自己）
+      AGENT_DB_HOST: db
+      AGENT_DB_PORT: "3306"
+      AGENT_DB_USER: ${AGENT_DB_USER}
+      AGENT_DB_PASSWORD: ${AGENT_DB_PASSWORD}
+      AGENT_DB_NAME: agent_platform
+      MODELSCOPE_API_KEY: ${MODELSCOPE_API_KEY}
+      AGENT_JWT_SECRET: ${AGENT_JWT_SECRET}
+    ports:
+      - "8000:8000"
+    # 前端热更新：把本地 static/ 只读挂进容器。改完前端浏览器强刷即可生效，
+    # 不用重建镜像（镜像里烘进去的那份会被这个挂载遮住，两者内容一致时无差别）。
+    volumes:
+      - ./static:/app/static:ro
+
+    depends_on:
+      db:
+        condition: service_healthy   # 等 MySQL 真就绪再起 app，避免启动即崩
+
+volumes:
+  mysql_data:
