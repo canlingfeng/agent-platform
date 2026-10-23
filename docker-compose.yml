@@ -50,6 +50,64 @@ services:
     depends_on:
       db:
         condition: service_healthy   # 等 MySQL 真就绪再起 app，避免启动即崩
+  etcd:
+    container_name: milvus-etcd
+    image: quay.io/coreos/etcd:v3.5.5
+    command: etcd -advertise-client-urls=http://etcd:2379 --listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    volumes:
+     - etcd_data:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+  minio:
+    container_name: milvus-minio
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    volumes:
+      - minio_data:/minio_data
+    command: minio server /minio_data --console-address ":9091"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ---------- Milvus 向量库（standalone）----------
+  # 依赖 etcd（元数据）+ minio（对象存储），两者健康后才启动
+  milvus:
+    container_name: milvus-standalone
+    image: milvusdb/milvus:v2.5.27
+    # 列表形式（exec form）：不需要 shell 解析，参数不会被意外展开
+    command: ["milvus", "run", "standalone"]
+    # Milvus 用到的部分系统调用被 Docker 默认 seccomp 策略拦截，需显式关闭
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379      # 元数据服务：服务名 + 端口
+      MINIO_ADDRESS: minio:9000      # 对象存储：MinIO 的 S3 API 端口是 9000（不是 9090）
+    volumes:
+      - milvus_data:/var/lib/milvus
+    ports:
+      - "19530:19530"                # 客户端访问口（pymilvus 连这个）
+      - "9091:9091"                  # Milvus WebUI
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s              # 启动慢：前 90 秒内的失败不计入
+      timeout: 20s
+      retries: 3
+    depends_on:
+      etcd:
+        condition: service_healthy   # 等 etcd 健康检查通过
+      minio:
+        condition: service_healthy   # 等 minio 健康检查通过
 
 volumes:
   mysql_data:
+  etcd_data:
+  minio_data:
+  milvus_data:
