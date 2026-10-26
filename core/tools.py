@@ -89,10 +89,12 @@ def execute_command (command ,approve=False):
     try: 
         '''
         subprocess.run() 方法用于执行系统命令，并且可以捕获输出和错误信息。
-        设置了超时时间为 10 秒，工作目录为 ROOT。 他是一个子进程执行命令的方式，
-        返回一个 CompletedProcess 对象，其中包含了命令的输出和错误信息。
+        设置了超时时间为 10 秒，工作目录为【当前用户的隔离目录 user_root()】。
+        他是一个子进程执行命令的方式，返回一个 CompletedProcess 对象。
         这是多线程环境下执行命令的安全方式，避免阻塞主线程。
         '''
+        cwd = user_root()                # 租户文件隔离：每个用户落在 workspace/<user_id>/
+        os.makedirs(cwd, exist_ok=True)  # 目录可能尚未创建，先确保存在，否则 subprocess 会报 FileNotFoundError
         result=subprocess.run(
             command, 
             shell=True, 
@@ -101,7 +103,7 @@ def execute_command (command ,approve=False):
             stderr=subprocess.PIPE,
             text=True,
             timeout=10,
-            cwd=ROOT  # 设置工作目录为 ROOT
+            cwd=cwd
             )
         return f"输出:\n{result.stdout}\n错误输出:\n{result.stderr}"
     except subprocess.TimeoutExpired:

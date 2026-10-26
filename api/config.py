@@ -19,7 +19,7 @@ from api.deps import get_current_user
 from api.schemas import ConfigResponse
 from core import permission
 from core.agent import CONFIG_PATH
-from core.providers import PRESETS
+from core.providers import PRESETS, provider_capabilities
 
 router = APIRouter(prefix="/api/v1", tags=["config"])
 
@@ -41,7 +41,7 @@ def _persist(agent, include_key: bool = False) -> None:
     对应的环境变量，密钥只能存在 config.json 里，否则重启后不可用。
     """
     try:
-        with open(CONFIG_PATH, "r") as f:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             cfg = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         cfg = {}
@@ -50,7 +50,7 @@ def _persist(agent, include_key: bool = False) -> None:
     cfg["model"] = agent.model
     if include_key and agent.api_key:
         cfg["api_key"] = agent.api_key
-    with open(CONFIG_PATH, "w") as f:
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
@@ -80,6 +80,10 @@ def list_providers(user=Depends(get_current_user)):
     custom 也会返回，并带 `custom=true` 标记：前端对它显示"手填 Base URL +
     模型名 + 可选密钥"的表单，而不是点击即切换。
     supports_images 供前端标注"支持图片"，配合图片上传功能选模型。
+
+    ⚠️ 只返回具备 chat 能力的厂商：embedding / rerank 这类向量模型不能用于对话，
+    若一并返回，前端模型选择器会列出点了就报错的选项。返回结构与字段不变，
+    前端无需改动。
     """
     return [
         {
@@ -90,6 +94,7 @@ def list_providers(user=Depends(get_current_user)):
             "custom": key == "custom",
         }
         for key, preset in PRESETS.items()
+        if "chat" in provider_capabilities(key)
     ]
 
 

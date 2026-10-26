@@ -82,7 +82,8 @@ flowchart LR
 - `core/agent_graph.py` — `build_agent_graph()`：LangGraph `StateGraph` 编排「模型调用 → 工具调用 → 回环」循环
 - `core/tools.py` — `TOOLS` 工具注册表，6 个工具：文件读写、列目录、命令执行、天气、时间
 - `core/permission.py` — `decide()` 权限闸门，`_subject()` 审计 subject，路径根隔离 + shell 元字符过滤
-- `core/providers.py` — `PRESETS` 供应商预设目录 + `resolve()` 解析
+- `core/providers.py` — `PRESETS` 对话供应商目录 + `resolve()` 解析；`PROVIDER_BASE_URLS` / `CAPABILITY_DEFAULTS` / `provider_capabilities()` 供能力层复用
+- `core/models.py` — **模型注册表**：`resolve(capability)` 按能力（chat / embedding / rerank）解析出 `ModelSpec`，全项目唯一的模型解析入口
 - `core/context.py` — 请求级身份（`contextvars`）：让文件工具落在 `workspace/{user_id}/`，并让审计日志归属到人
 - `storage/db.py` — PyMySQL 连接与 `query / execute / transaction`，凭据全部来自 `AGENT_DB_*` 环境变量
 - `storage/checkpointer.py` — `build_checkpointer()`：原生 `pymysql` 连接 + `PyMySQLSaver.setup()` 幂等建检查点三表
@@ -99,7 +100,7 @@ flowchart LR
 ```
 agent_demo/
 ├── run.py                # 一键启动 uvicorn（自动加载 .env，无需 cd）
-├── config.json           # 本地密钥（.gitignore 忽略，禁止提交）
+├── config.json           # 本地配置（.gitignore 忽略，禁止提交）
 ├── config.json.example   # 配置示例（可提交）
 ├── schema.sql            # 6 张业务表 DDL（messages 表为预留未启用）
 ├── requirements.txt      # 依赖清单（gradio 已移除）
@@ -160,7 +161,7 @@ LangGraph 检查点三表（`checkpoints` / `checkpoint_writes` / `checkpoint_bl
 | GET | `/api/v1/sessions/{id}/messages` | 会话历史（从 checkpointer 恢复） |
 | GET | `/api/v1/sessions/{id}/status` | 消息条数 + 上下文压缩状态 |
 | GET | `/api/v1/config` | 运行配置：provider / model / 工具 / 权限规则（**不含 api_key**） |
-| GET | `/api/v1/providers` | 可选模型列表（含 supports_images 标注） |
+| GET | `/api/v1/providers` | 可选**对话**模型列表（含 supports_images 标注；按 chat 能力过滤，不含 embedding/rerank） |
 | POST | `/api/v1/config` | 切换供应商/模型（热切换 + 持久化；custom 需 base_url + model） |
 | POST | `/api/v1/upload` | 图片/视频上传（含模型能力闸门，不支持返回 400） |
 | POST | `/api/v1/chat` | 同步对话 |
@@ -187,7 +188,44 @@ LangGraph 检查点三表（`checkpoints` / `checkpoint_writes` / `checkpoint_bl
 | `kimi` | Kimi Moonshot | `https://api.moonshot.cn/v1` |
 | `custom` | 自定义 | 手填 Base URL + 模型名 |
 
-优先级：**环境变量 `MODELSCOPE_API_KEY`（生产注入）> `config.json`（网页保存）**。
+### 密钥优先级
+
+环境变量（生产注入）> `config.json`（网页保存）。唯一例外：`provider=custom`
+的自定义端点没有对应环境变量，密钥才落在 `config.json`。
+
+### 能力（capability）与模型注册表
+
+对话之外的能力（RAG 的 embedding / rerank）往往来自另一家厂商，
+由 `core/models.py` 统一按能力解析，调用方只写能力名，不写模型名：
+
+```python
+from core.models import resolve
+
+spec = resolve("embedding")      # 或 "chat" / "rerank"
+# spec.provider / spec.base_url / spec.model / spec.api_key
+```
+
+三层优先级：**环境变量 > `config.json` 的 `models.<capability>` > `CAPABILITY_DEFAULTS`**
+
+| 能力 | 默认 provider | 默认模型 | 密钥环境变量 |
+|---|---|---|---|
+| `chat` | `modelscope` | `Qwen/Qwen3.5-27B` | `MODELSCOPE_API_KEY` |
+| `embedding` | `siliconflow` | `BAAI/bge-m3` | `SILICONFLOW_API_KEY` |
+| `rerank` | `siliconflow` | `BAAI/bge-reranker-v2-m3` | `SILICONFLOW_API_KEY` |
+
+覆盖方式（任选一层）：
+
+```bash
+export EMBEDDING_MODEL="BAAI/bge-m3"          # 环境变量
+export SILICONFLOW_API_KEY="sk-xxxx"          # 密钥只走环境变量，不落 config.json
+```
+
+```json
+{ "models": { "embedding": { "provider": "zhipu", "model": "embedding-3" } } }
+```
+
+对应环境变量名由能力名大写推导：`<CAPABILITY>_MODEL` / `<CAPABILITY>_BASE_URL` / `<CAPABILITY>_API_KEY`。
+容器里没有 `config.json`（`.dockerignore` 已排除），密钥**必须**走环境变量，否则对应能力不可用。
 
 ---
 
@@ -200,7 +238,7 @@ LangGraph 检查点三表（`checkpoints` / `checkpoint_writes` / `checkpoint_bl
 ```bash
 # 1. 准备环境变量
 cp .env.example .env
-# 编辑 .env：MYSQL_ROOT_PASSWORD / AGENT_DB_PASSWORD / MODELSCOPE_API_KEY
+# 编辑 .env：MYSQL_ROOT_PASSWORD / AGENT_DB_PASSWORD / MODELSCOPE_API_KEY / SILICONFLOW_API_KEY（RAG 用）/ AGENT_JWT_SECRET
 
 # 2. 构建并启动（首次拉镜像 + 装依赖，5-15 分钟）
 docker compose up -d --build
@@ -225,7 +263,9 @@ mysql -uroot -p < schema.sql
 
 # 3. 配置环境变量
 export AGENT_DB_PASSWORD="你的强密码"
-export MODELSCOPE_API_KEY="ms-xxxx"
+export MODELSCOPE_API_KEY="ms-xxxx"        # 对话
+export SILICONFLOW_API_KEY="sk-xxxx"       # RAG 的 embedding / rerank
+export AGENT_JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
 
 # 4. 启动
 python run.py              # 等价于 uvicorn api.app:app --host 0.0.0.0 --port 8000
@@ -249,7 +289,8 @@ pytest tests/
 - **多租户隔离**：任何涉及 session 的操作先 `get_session_for_user(session_id, user_id)` 越权校验，非本人会话一律 404
 - **权限闸门**：`execute_command` 含 shell 元字符（`| ; & < > \` $()` 等）直接 `DENY`；文件工具限定在 `workspace` 根内（`os.path.commonpath` 防越界）；白名单命令 `ALLOW`，其余 `ASK`
 - **审计**：每次裁决旁路落 `audit_logs`，外键 `ON DELETE SET NULL` 保证用户注销后审计留存
-- **配置外置**：数据库密码、API Key、JWT 密钥走环境变量；`config.json` 与 `.env` 均在 `.gitignore` 与 `.dockerignore` 中
+- **配置外置**：数据库密码、API Key、JWT 密钥走环境变量；`config.json` 与 `.env` 均在 `.gitignore` 与 `.dockerignore` 中。模型选择同样外置——调用方只写能力名，具体模型由 `core/models.py` 按「环境变量 > config.json > 默认值」解析
+- **最小密钥面**：`config.json` 不存明文密钥，密钥一律来自环境变量；仅 `provider=custom`（无对应环境变量）例外
 - **镜像脱敏**：`GET /api/v1/config` 经 Pydantic `response_model` 做字段白名单，`api_key` 结构性无法外泄
 - **容器安全**：以非 root 用户（uid 10001）运行；`.dockerignore` 阻止密钥与缓存进入镜像层
 

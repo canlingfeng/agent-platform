@@ -9,6 +9,8 @@ const state = {
   currentId: null,  // 当前选中的会话 id
   messages: [],     // 当前会话的消息历史 [{role, content}]
   streaming: false, // 流式进行中标志：true 时禁止再发起 send()
+  queue: [],        // 流式期间用户继续发的消息，先进这里排队（FIFO），流结束自动发
+  controller: null, // 当前流式的 AbortController，用于"停止"按钮中断 fetch
 };
 
 // 请求序号：每次"选中会话"自增 1，用于丢弃过期的异步响应（防乱序渲染）
@@ -229,11 +231,19 @@ async function send() {
   const input = $("input");
   const text = input.value.trim();
   if (!state.currentId) return;
-  if (state.streaming) return;           // 上一轮流式未结束，禁止并发发起
+  // 正在流式：不直接丢弃，把当前输入框文字排进队列，流结束自动发
+  if (state.streaming) {
+    if (text) state.queue.push(text);    // 只排文字消息（图片排队较复杂，先不做）
+    input.value = "";
+    autoGrow();
+    return;
+  }
   await pendingReads;                    // 先等图片读完，才能判断"是不是只有附件"
   const hasImages = pendingFiles.length > 0;
   if (!text && !hasImages) return;       // 文字和附件都为空，才不发送
   state.streaming = true;                // 上锁
+  state.controller = new AbortController(); // 每轮流式新建一个控制器
+  setSendButton(true);                   // 按钮切到"停止"态
   const sid = state.currentId;           // 记下本次会话 id，回调里校验用
   input.value = "";
   autoGrow();                            // 复位输入框高度
@@ -252,16 +262,86 @@ async function send() {
       if (!el || state.currentId !== sid) return;
       el.textContent += chunk;           // 每来一个片段就追加，实现"逐字显示"
       $("messages").scrollTop = $("messages").scrollHeight;  // 自动滚到底
-    }, images);
+    }, images, state.controller.signal, (cmd) => {
+      // ASK 三态：收到待确认命令 → 弹确认框（cmd 为待执行的系统命令）
+      showConfirmModal(cmd, sid);
+    });
   } catch (e) {
     // 防御性错误处理：节点可能已不存在，不能假设出错时现场还完好
     const el = $(aiId);
+    if (e.name === "AbortError") {            // 用户点了停止，属预期行为
+      if (el) el.textContent += "（已停止）";
+      state.queue = [];                       // 停止 = 不再自动发后续排队消息
+      return;                                 // finally 仍会执行
+    }
     if (el) el.textContent = "[错误] " + e.message;
   } finally {
     state.streaming = false;             // 无论成功失败都要释放锁
+    state.controller = null;
+    setSendButton(false);                // 按钮恢复"发送"态
+    // 队列里还有消息：自动接着发，实现"连续发言不打断"
+    if (state.queue.length) {
+      const next = state.queue.shift();  // shift = 取队首（FIFO）
+      $("input").value = next;
+      send();
+    }
   }
 }
 
+// 停止当前流式：abort 掉 fetch，后端会检测到断开并提前结束
+function stopGeneration() {
+  if (state.controller) state.controller.abort();
+}
+
+// 切换发送/停止按钮外观与行为：isStreaming=true 显示"停止"，否则"发送"
+function setSendButton(isStreaming) {
+  const btn = $("btn-send");
+  if (isStreaming) {
+    btn.textContent = "■";          // 方块=停止
+    btn.title = "停止生成";
+    btn.onclick = stopGeneration;
+  } else {
+    btn.textContent = "↑";           // 箭头=发送
+    btn.title = "发送";
+    btn.onclick = send;
+  }
+}
+
+
+// ==================== ASK 三态确认框 ====================
+
+// 当前待确认的命令 + 会话（模块级，供"允许 / 拒绝"两个按钮共用）
+let confirmState = null;  // { cmd, sid }
+
+// 弹出确认框：展示待执行命令，等待用户允许 / 拒绝
+function showConfirmModal(cmd, sid) {
+  confirmState = { cmd, sid };
+  $("confirm-cmd").textContent = cmd;
+  $("confirm-modal").hidden = false;
+}
+
+// 关闭确认框并清空待确认状态
+function closeConfirmModal() {
+  $("confirm-modal").hidden = true;
+  confirmState = null;
+}
+
+// 用户点击"允许执行 / 拒绝"：调后端 /chat/confirm，把命令输出作为一条 AI 消息追加
+// （方案 A：确认结果直接落界面，不回灌 LangGraph，简单且可审计）
+async function onAskConfirm(decision) {
+  if (!confirmState) return;
+  const { cmd, sid } = confirmState;
+  closeConfirmModal();
+  // 先放一条占位 AI 气泡，执行完再填结果（命令执行可能耗时，给即时反馈）
+  const aiId = addMessage("ai", "⏳ 正在执行命令…");
+  try {
+    const data = await api.confirmCommand(sid, cmd, decision);
+    $(aiId).textContent = `[命令] ${cmd}\n${data.result}`;
+  } catch (e) {
+    $(aiId).textContent = "[错误] " + e.message;
+  }
+  $("messages").scrollTop = $("messages").scrollHeight;
+}
 
 // textarea 自动增高：先复位再按内容高度撑开，封顶 160px 后内部滚动
 function autoGrow() {
@@ -468,6 +548,8 @@ window.addEventListener("DOMContentLoaded", () => {
   $("file-input").onchange = onFileChange;
   document.addEventListener("paste", onPaste);   // Ctrl+V 粘贴图片到聊天框
   $("btn-custom-ok").onclick = applyCustomModel; // 自定义模型表单的"使用"按钮
+  $("btn-confirm-allow").onclick = () => onAskConfirm("allow"); // ASK 弹框：允许执行
+  $("btn-confirm-deny").onclick = () => onAskConfirm("deny");   // ASK 弹框：拒绝
 
   // 点页面其他位置关闭浮层
   document.addEventListener("click", (e) => {

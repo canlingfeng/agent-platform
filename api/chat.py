@@ -22,6 +22,9 @@ from langchain_core.messages import HumanMessage
 from api.deps import get_current_user
 from core.context import RequestIdentity, set_identity, reset_identity
 from core.providers import model_supports_images
+from pydantic import BaseModel
+from core.tools import execute_command
+from core.permission import decide, DENY
 from api.schemas import (
     ChatRequest,
     ChatResponse,
@@ -194,6 +197,8 @@ async def chat_stream(req: ChatRequest, request: Request,
         nonlocal total_tokens
         queue: asyncio.Queue = asyncio.Queue()
 
+        ask_pending = False     # 标记本轮是否因 ASK 挂起（挂起时不再发 done，交由前端弹框接管）
+
         def producer():
             nonlocal total_tokens
             # 身份必须在这里注入：graph.stream 在本线程内同步执行，
@@ -215,7 +220,18 @@ async def chat_stream(req: ChatRequest, request: Request,
                                         + usage.get("output_tokens", 0))
                                 )
                             content = getattr(m, "content", "")
-                            if content and getattr(m, "type", "") == "ai":
+                            mtype = getattr(m, "type", "")
+                            # ASK 三态：工具要执行"非白名单命令"时，execute_command 在
+                            # webui 模式下返回 "NEED_CONFIRM:<cmd>"（type=="tool"）。这里
+                            # 把它识别成挂起信号，推给前端弹确认框，并 return 暂停 producer，
+                            # 等用户确认后再由 /chat/confirm 单独执行。
+                            if (mtype == "tool" and isinstance(content, str)
+                                    and content.startswith("NEED_CONFIRM:")):
+                                cmd = content[len("NEED_CONFIRM:"):]
+                                asyncio.run_coroutine_threadsafe(
+                                    queue.put({"ask": cmd}), loop)
+                                return
+                            if content and mtype == "ai":
                                 asyncio.run_coroutine_threadsafe(queue.put(content), loop)
             except Exception as e:  # 流式过程出错也要让客户端感知
                 asyncio.run_coroutine_threadsafe(queue.put(f"[错误] {e}"), loop)
@@ -223,19 +239,87 @@ async def chat_stream(req: ChatRequest, request: Request,
                 reset_identity(token)
                 asyncio.run_coroutine_threadsafe(queue.put(None), loop)
 
-        await loop.run_in_executor(None, producer)
+        # 修复假流式：用 run_in_executor 把 producer 调度到线程池，但【不立刻 await 它】。
+        # producer 在后台线程边生成边往 queue 塞 token，本协程立刻进入下面的 while 循环
+        # 把 queue 里的 token 实时 yield 出去 —— 真正的逐字流式。
+        # 旧写法 `await loop.run_in_executor(...)` 会先等 producer 整段跑完才往下走，
+        # 导致前端要等模型全部生成完才一次性收到所有帧（假流式/攒批）。
+        producer_task = loop.run_in_executor(None, producer)
         while True:
+            # 客户端断开（点了停止 / 关页面）→ 不再白跑，直接收尾
+            if await request.is_disconnected():
+                break
             item = await queue.get()
             if item is None:
                 break
-            # JSON 编码成单行：AI 原文里的 \n\n 会变成转义符 \n，
-            # 绝不会被当成 SSE 帧分隔符（之前的 bug：裸字符串遇空行被切成多段、续行被前端丢弃）。
-            yield "data: " + json.dumps({"t": item}, ensure_ascii=False) + "\n\n"
-        # 结束标记同样 JSON 化；前端按 payload.done 判断，不再依赖裸字符串 "[DONE]"
-        yield "data: " + json.dumps({"done": True}, ensure_ascii=False) + "\n\n"
-        # 流结束后记账（token 来自本轮所有 AI 消息的 usage_metadata 累加）
+            try:
+                # dict 帧 = ASK 挂起信号：把命令透传给前端确认框，然后结束本轮流。
+                # 注意 break 后不再发 done —— 否则前端会先弹框又被 done 收尾逻辑干扰。
+                if isinstance(item, dict) and "ask" in item:
+                    yield "data: " + json.dumps({"ask": item["ask"]}, ensure_ascii=False) + "\n\n"
+                    ask_pending = True
+                    break
+                # JSON 编码成单行：AI 原文里的 \n\n 会变成转义符 \n，
+                # 绝不会被当成 SSE 帧分隔符（之前的 bug：裸字符串遇空行被切成多段、续行被前端丢弃）。
+                yield "data: " + json.dumps({"t": item}, ensure_ascii=False) + "\n\n"
+            except (GeneratorExit, asyncio.CancelledError):
+                break   # 连接已断，yield 失败就退出
+        # producer 把 None 塞进 queue 表示它已结束；此时再等待它真正退出（拿到可能的异常）
+        await producer_task
+        # 不论正常结束还是 ASK 挂起，本轮已产生的 token 都记账（避免漏算）
         user_store.record_usage(user["id"], tokens=total_tokens, requests=1)
         # 刷新 updated_at，让最近活跃的会话排到列表前面
         user_store.touch_session(req.session_id, user["id"])
+        # 只有真正跑完才发 done；ASK 挂起时由前端弹框接管，不要发 done
+        if not ask_pending:
+            yield "data: " + json.dumps({"done": True}, ensure_ascii=False) + "\n\n"
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+class ConfirmRequest(BaseModel):
+    """ASK 三态的确认请求：用户对一条"需确认命令"给出允许 / 拒绝。"""
+    session_id: str
+    command: str
+    decision: str   # "allow" 为允许；其它值（含 "deny"）一律视为拒绝（fail-closed）
+
+
+@router.post("/chat/confirm")
+def chat_confirm(req: ConfirmRequest, request: Request,
+                 user=Depends(get_current_user)):
+    """ASK 三态的确认端点：用户在前端弹框里选择允许 / 拒绝后调用。
+
+    安全要点（面试 / 生产都必讲）：
+      - 越权校验：会话必须属于当前用户（IDOR 防护），非本人会话直接 404。
+      - 安全闸：必须重跑 decide() 挡掉 DENY 命令。否则攻击者只要拿一个
+        NEED_CONFIRM 的 command 直接 POST decision=allow，就能借 execute_command
+        的 approve 分支绕过白名单 / shell 元字符闸执行任意命令（RCE）。
+      - 审计归属：注入请求级身份，让 decide()/execute_command() 内部的审计日志
+        能正确记到这个用户 / 会话头上，而不是留 NULL。
+    """
+    # 越权校验：会话必须属于当前用户
+    row = user_store.get_session_for_user(req.session_id, user["id"])
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="会话不存在或无权访问")
+
+    # 注入请求级身份：decide() / execute_command() 内部会记审计日志，
+    # 需要 user_id / session_id 才能正确归属到人（否则审计列留 NULL）。
+    token = set_identity(RequestIdentity(
+        user_id=user["id"], session_id=req.session_id,
+        client_ip=request.client.host if request.client else None))
+    try:
+        # 安全闸：重跑裁决，DENY 一律 403，不允许用 approve=True 强行绕过。
+        if decide("execute_command", {"command": req.command}) == DENY:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="命令被拒绝：命中黑名单或包含危险字符")
+        # 用户拒绝（含非 "allow" 的任意值）→ 不执行，fail-closed。
+        if req.decision != "allow":
+            return {"result": "用户拒绝执行命令"}
+        # 用户允许 → 真正执行。execute_command(approve=True) 内部仍会再跑一次
+        # decide()（DENY 返回拒绝字符串而非执行），与上面的 403 闸构成双重保险。
+        output = execute_command(req.command, approve=True)
+        return {"result": output}
+    finally:
+        reset_identity(token)

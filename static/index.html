@@ -121,6 +121,19 @@
       </main>
   </div>
 
+  <!-- ========== ASK 三态确认框（命令需用户允许/拒绝时弹出） ========== -->
+  <div id="confirm-modal" class="confirm-modal" hidden>
+    <div class="confirm-card">
+      <h4>命令需确认</h4>
+      <p class="confirm-tip">AI 请求执行以下命令，是否允许？</p>
+      <pre id="confirm-cmd" class="confirm-cmd"></pre>
+      <div class="confirm-actions">
+        <button id="btn-confirm-deny" class="ghost">拒绝</button>
+        <button id="btn-confirm-allow" class="primary">允许执行</button>
+      </div>
+    </div>
+  </div>
+
   <!-- type="module"：以 ES Module 方式加载，app.js 里才能用 import 语法 -->
   <script type="module" src="/js/app.js"></script>
 </body>

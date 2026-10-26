@@ -1,4 +1,23 @@
 {
+  "provider": "modelscope",
   "api_key": "ms-your-modelscope-key-here",
-  "provider": "modelscope"
+
+  "_说明": [
+    "本文件是配置示例，可提交；真实 config.json 已被 .gitignore 与 .dockerignore 排除。",
+    "顶层 provider / base_url / model = 对话能力（旧格式，保持兼容）。",
+    "models 段按【能力】配置：chat / embedding / rerank，可覆盖 provider 与 model。",
+    "密钥一律走环境变量（MODELSCOPE_API_KEY / SILICONFLOW_API_KEY），不要写进这里；",
+    "唯一例外是 provider=custom：自定义端点没有对应环境变量，密钥才落在本文件。"
+  ],
+
+  "models": {
+    "embedding": {
+      "provider": "siliconflow",
+      "model": "BAAI/bge-m3"
+    },
+    "rerank": {
+      "provider": "siliconflow",
+      "model": "BAAI/bge-reranker-v2-m3"
+    }
+  }
 }

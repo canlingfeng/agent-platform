@@ -48,7 +48,9 @@ class Agent:
         配置文件里的 api_key 为准。缺字段用默认值兜底，旧版只有 api_key 的
         config.json 也能正常加载，不会 KeyError。"""
         try:
-            with open(CONFIG_PATH, "r") as f:
+            # encoding 必须显式给：Windows 下默认按 GBK 解码，config.json 含非
+            # ASCII（中文注释/label）会 UnicodeDecodeError。
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             return

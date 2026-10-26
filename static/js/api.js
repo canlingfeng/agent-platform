@@ -137,11 +137,14 @@ export async function chatSync(sessionId, message) {
 
 // 流式对话：POST /api/v1/chat/stream，用 Fetch Streams 消费 SSE（重点！）
 // onChunk 是回调：每收到一个增量片段就调用一次，app.js 拿它去更新界面。
-export async function streamChat(sessionId, message, onChunk, images = []) {
+// onAsk 是回调：收到 ASK 挂起信号（payload.ask）时调用，参数为待确认命令，app.js 弹确认框。
+//   不入参也要给默认值 null —— 老调用方不需要 ASK 时传不传都不影响。
+export async function streamChat(sessionId, message, onChunk, images = [], signal = null, onAsk = null) {
   const res = await fetch("/api/v1/chat/stream", {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify({ session_id: sessionId, message, images }),
+    signal,                                 // 中断信号：由 app.js 传入 AbortController.signal，为 null 时等同不传
   });
   if (!res.ok) {
     // 后端的模型能力闸门返回 {"detail": {"error":"model_unsupported","message":"..."}}。
@@ -173,7 +176,34 @@ export async function streamChat(sessionId, message, onChunk, images = []) {
       try { payload = JSON.parse(raw); }              // ⑨ 后端把内容 JSON 编码成单行，原文空行不再切断帧
       catch { continue; }                             //   解析失败（极少见）跳过，避免渲染半个碎片
       if (payload.done) return;                       // ⑩ 结束标记（{"done":true}），收工
-      if (typeof payload.t === "string") onChunk(payload.t);  // ⑪ 增量片段交给上层渲染
+      if (payload.ask !== undefined) {                // ⑪ ASK 挂起信号：把待确认命令交给上层弹框
+        if (onAsk) onAsk(payload.ask);
+        return;                                       //    确认框接管后续，本轮流结束
+      }
+      if (typeof payload.t === "string") onChunk(payload.t);  // ⑫ 增量片段交给上层渲染
     }
   }
+}
+
+// ASK 三态确认：POST /api/v1/chat/confirm → { result }
+// decision 为 "allow" 时后端才会真正执行命令；其它值（含 "deny"）后端返回"用户拒绝执行命令"。
+// 返回 { result }，app.js 把命令输出作为一条 AI 消息追加（方案 A：简单、可审计）。
+export async function confirmCommand(sessionId, command, decision) {
+  const r = await fetch("/api/v1/chat/confirm", {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({ session_id: sessionId, command, decision }),
+  });
+  if (!r.ok) {
+    // 后端 403（命令被 DENY）/ 404（会话越权）/ 其它：把 message 提出来抛给界面
+    let msg = "确认执行失败 " + r.status;
+    try {
+      const body = await r.json();
+      const d = body.detail;
+      if (d && typeof d === "object" && d.message) msg = d.message;
+      else if (typeof d === "string") msg = d;
+    } catch { /* 非 JSON 错误体，保留默认文案 */ }
+    throw new Error(msg);
+  }
+  return r.json();   // { result: "..." }
 }
