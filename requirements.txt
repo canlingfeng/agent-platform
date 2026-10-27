@@ -20,6 +20,9 @@ langchain-openai==1.7.0
 # ---- 数据库驱动（纯 Python，Windows/Linux 免编译）----
 pymysql==1.2.3
 
+# ---- 向量库（Milvus Lite，本地文件模式，无需独立服务进程；3.x 返回 List[List[dict]]）----
+pymilvus==3.0.2
+
 # ---- 密码哈希（自适应慢哈希，自带 salt）----
 bcrypt==3.2.0
 
