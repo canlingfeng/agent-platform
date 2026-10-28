@@ -116,9 +116,12 @@ def resolve(capability: str, cfg: dict = None) -> ModelSpec:
                      section.get("base_url") or top.get("base_url"),
                      PROVIDER_BASE_URLS.get(provider, ""))
 
-    api_key = _pick(defaults["api_key_env"], None, "")
+    # 密钥优先级：<CAP>_API_KEY 环境变量（provider 无关）> 默认厂商的环境变量
+    api_key = (_pick(f"{capability.upper()}_API_KEY", None, "")
+               or _pick(defaults["api_key_env"], None, ""))
     if not api_key and provider == "custom":
-        # 自定义端点没有对应环境变量，密钥只能落在 config.json
+        # 自定义端点若未设 <CAP>_API_KEY，才回落到 config.json（明文，仅限本地开发；
+        # 容器部署没有 config.json，届时务必用环境变量）
         api_key = (section.get("api_key") or cfg.get("api_key") or "").strip()
 
     return ModelSpec(

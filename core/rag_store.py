@@ -29,7 +29,12 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 向量库文件放 rag_data/（已在 .gitignore 排除），与 workspace/ 用户文件分开
 _RAG_DIR = os.path.join(_PROJECT_ROOT, "rag_data")
 os.makedirs(_RAG_DIR, exist_ok=True)
-_DB_URI = os.path.join(_RAG_DIR, "milvus.db")
+# 向量库地址：默认 Milvus Lite 本地文件模式；设置环境变量 MILVUS_URI 可切到
+# Milvus standalone（宿主机 http://localhost:19530 / 容器内 http://milvus:19530）。
+# 两种模式共用 MilvusClient，Python API 完全一致，切换零代码改动。
+# 注：Windows 上 Milvus Lite 的 load_collection 会触发原生库访问违规(0xC0000005)，
+# 故 Windows 本地验证一律走 standalone。
+_DB_URI = os.environ.get("MILVUS_URI") or os.path.join(_RAG_DIR, "milvus.db")
 
 # embedding 维度：BAAI/bge-m3 = 1024。建表维度必须和 embedding 模型输出一致，
 # 以后换 embedding 模型若维度变了，这里要同步改。
@@ -39,6 +44,9 @@ _CHUNK_SIZE = 512
 _CHUNK_OVERLAP = 64
 
 _RERANK_CANDIDATE_MULT = 3
+
+# 空 filter 的 query 必须带 limit（Milvus 参数校验，否则报 code=1100），取服务端默认上限
+_QUERY_LIMIT = 16384
 
 class RagError(Exception):
     """RAG 检索层的可预期异常：缺密钥 / 上游报错 / 空库等，供上层转成友好提示。"""
@@ -137,25 +145,92 @@ def add_texts(user_id,text:str,source:str="")->str:
     ]
     client = _get_client()
     client.insert(collection_name=name, data=data)  # ⑦ 批量插入
+    client.flush(name)
     return doc_id                                   # ⑧ 返回 doc_id 供后续列举/删除
 
-def search(user_id,query:str,top_k:int =5)->list[dict]:
-    """检索主入口：查询向量化 → 向量召回 → 返回 top_k 片段（含相似度分数）。"""
-    name=_collection_name(user_id)
-    client=_get_client()
+def rerank(query:str, candidates:list[dict],top_k:int)->list[dict]:
+    """用交叉编码器对候选重排序，返回前 top_k（精度高于纯向量余弦）。"""
+    if not candidates:
+        return []
+    spec=resolve("rerank")
+    if not spec.api_key:
+        raise RagError("没有 rerank API 密钥，请配置 ")
+    resp=requests.post(
+        spec.base_url + "/rerank",
+        headers={"Authorization": f"Bearer {spec.api_key}", "Content-Type": "application/json"},
+        json={
+            "model": spec.model,
+            "query": query,
+            "documents": [c["text"] for c in candidates],  # API 只收字符串列表，最少 1 条
+            "top_n": top_k,
+            "return_documents": False,  
+        },
+        timeout=60,
+     )
+    if resp.status_code != 200:
+        raise RagError(f"rerank 上游错误 {resp.status_code}: {resp.text}")
+    ranked=resp.json()["results"]
+    out=[]
+    for r in ranked:
+        c=dict(candidates[r["index"]])
+        c["score"]=r["relevance_score"]
+        out.append(c)
+    return out
+     
+
+def search(user_id, query: str, top_k: int = 5, use_rerank: bool = True) -> list[dict]:
+    """检索主入口：查询向量化 → 向量召回（多召回候选）→ 可选 rerank 精排 → 返回 top_k。"""
+    name = _collection_name(user_id)
+    client = _get_client()
     if not client.has_collection(name):
         return []
-    query_vector=embed([query])[0]
-    res = client.search(                            # ④ 向量召回
+    q_vec = embed([query])[0]
+    candidate_limit = top_k * _RERANK_CANDIDATE_MULT   # 多召回候选，交给 rerank 精排
+    client.load_collection(name)                       # Milvus：集合必须先加载到内存才能检索
+    res = client.search(
         collection_name=name,
-        data=[query_vector],                               #   查询向量必须包成列表（即便只查一条）
-        limit=top_k,                                #   召回 top_k 条
-        output_fields=["text", "source", "doc_id"], #   指定返回字段；vector 不返回，省带宽
+        data=[q_vec],
+        limit=candidate_limit,
+        output_fields=["text", "source", "doc_id"],
     )
-    hits=res[0]
-    results = [
-        {"text": h["text"], "source": h["source"], 
-         "doc_id": h["doc_id"], "score": h["distance"]}
+    hits = res[0]
+    candidates = [
+        {"text": h["text"], "source": h["source"], "doc_id": h["doc_id"], "score": h["distance"]}
         for h in hits
     ]
-    return results
+    if use_rerank and candidates:
+        return rerank(query, candidates, top_k)        # 精排取前 top_k
+    return candidates[:top_k]                          # 无 rerank 时退回纯向量分数
+
+def list_docs(user_id) -> list[dict]:
+    """列出该用户所有文档（按 doc_id 去重，返回 doc_id + source）。"""
+    name = _collection_name(user_id)
+    client = _get_client()
+    if not client.has_collection(name):
+        return []
+    client.load_collection(name)                       # 同上，query 前也要加载
+    rows = client.query(
+        collection_name=name,
+        filter="",
+        output_fields=["doc_id", "source"],
+        limit=_QUERY_LIMIT,          # 空 expression 必须配 limit，否则报 code=1100
+    )
+    seen = {}
+    for r in rows:
+        did = r["doc_id"]
+        if did not in seen:
+            seen[did] = {"doc_id": did, "source": r.get("source", "")}
+    return list(seen.values())
+
+def delete_doc(user_id, doc_id: str) -> int:
+    """按 doc_id 物理删除该文档的全部 chunk，返回删除条数。"""
+    name = _collection_name(user_id)
+    client = _get_client()
+    if not client.has_collection(name):
+        return 0
+    # Milvus delete 用 filter 表达式；字符串值必须加双引号包裹
+    res = client.delete(collection_name=name, filter=f'doc_id == "{doc_id}"')
+    # delete 只写删除缓冲，flush 后才真正对后续 query 可见（实测不 flush 立即查数据还在）
+    client.flush(name)
+    # 返回值是 OmitZeroDict（dict 子类），键为 delete_count；dict 取键用 .get()，不能用 getattr
+    return res.get("delete_count", 0)
