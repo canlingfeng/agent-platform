@@ -129,6 +129,7 @@ def list_dir(file_path):
         return "拒绝访问：目录不在允许的根目录下"
 
 
+
 @dataclass    
 class Tool:                   
     name: str
@@ -137,6 +138,21 @@ class Tool:
     params: dict
     read_only: bool = False
     takes_slot: bool = False
+
+def rag_search_tool(query: str) -> str:
+    """使用 RAG 搜索工具获取相关内容。"""
+    from core.rag_store import search, RagError
+    ident = get_identity()
+    if ident is None or ident.user_id is None:
+        return"检索失败：当前没有用户身份上下文"
+    try:
+        hits=search(ident.user_id ,query,top_k=5)
+    except RagError as e:
+        return f"知识库检索失败：{e}" 
+    if not hits:
+        return "未找到相关内容"
+    lines=[f"[{i}] (来源: {h['source']}) {h['text']}" for i, h in enumerate(hits, 1)]
+    return "\n".join(lines)
 TOOLS = [
         Tool(name="read_file", fn=read_file,
             description="读取指定文件的内容",
@@ -163,7 +179,11 @@ TOOLS = [
         Tool(name="get_current_time", fn=get_current_time,
             description="获取当前时间",
             params={},
-            read_only=True, takes_slot=False)
+            read_only=True, takes_slot=False),
+        Tool(name="rag_search", fn=rag_search_tool,
+            description="检索当前用户的知识库文档",
+            params={"query": "检索的关键词或问题"},
+            read_only=True, takes_slot=False),
     ]
 
 def execute_command_tool(command: str) -> str:
@@ -176,5 +196,6 @@ langchain_tools = [
     StructuredTool.from_function(func=execute_command_tool),
     StructuredTool.from_function(func=list_dir),
     StructuredTool.from_function(func=get_weather),
+    StructuredTool.from_function(func=rag_search_tool),
     StructuredTool.from_function(func=get_current_time),
 ]
