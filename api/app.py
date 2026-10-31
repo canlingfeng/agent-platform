@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api import auth, chat, config, upload
+from api import auth, chat, config, upload, rag
 from core.agent import Agent
 from storage.checkpointer import build_checkpointer
 
@@ -46,7 +46,7 @@ app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(config.router)
 app.include_router(upload.router)
-
+app.include_router(rag.router)  
 @app.get("/health")
 def health():
     return {"status": "ok"}
