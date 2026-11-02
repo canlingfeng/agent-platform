@@ -34,6 +34,8 @@ httpx==0.28.1
 fastapi==0.141.1
 uvicorn==0.52.3
 python-jose==3.5.0
+# multipart/form-data 解析（FastAPI 的 File/UploadFile 依赖它，缺了会在启动时报错）
+python-multipart==0.0.32
 # .env 加载：让 `python run.py` 与 `docker compose up` 行为一致
 # （compose 会自动读 .env，裸跑 Python 不会；且不覆盖已有环境变量）
 python-dotenv==1.0.1
