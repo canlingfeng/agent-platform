@@ -34,9 +34,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Agent Platform API", version="0.1.0", lifespan=lifespan)
 
+# 生产加固：CORS 不再用 "*"。allow_credentials=True 配合 "*" 在浏览器端是非法组合
+# （浏览器会直接拒绝带凭据的泛域名请求），且等于对任何站点开放 API。
+# 改为从环境变量 AGENT_CORS_ORIGINS 读取逗号分隔的前端域名白名单；
+# 为空则只允许同源（SPA 由本服务 StaticFiles 托管，不走跨域）。
+_cors_origins = [
+    o.strip()
+    for o in os.environ.get("AGENT_CORS_ORIGINS", "").split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],            # 生产环境改为前端域名白名单
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

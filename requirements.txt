@@ -19,6 +19,8 @@ langchain-openai==1.7.0
 
 # ---- 数据库驱动（纯 Python，Windows/Linux 免编译）----
 pymysql==1.2.3
+# ---- 数据库连接池（复用连接，避免每请求新建连接；DBUtils.PooledDB 包装 pymysql）----
+dbutils==3.2.0
 
 # ---- 向量库（Milvus Lite，本地文件模式，无需独立服务进程；3.x 返回 List[List[dict]]）----
 pymilvus==3.0.2

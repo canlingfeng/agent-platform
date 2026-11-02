@@ -32,11 +32,14 @@ _bearer = HTTPBearer(auto_error=True)
 
 
 def create_access_token(user: dict) -> str:
-    """用 user 信息签发 JWT。sub 存内部主键 id（不要用 uuid 当 sub，保持简短）。"""
+    """用 user 信息签发 JWT。sub 存内部主键 id（不要用 uuid 当 sub，保持简短）；带 exp 过期时间。"""
+    expire_minutes = int(os.environ.get("AGENT_JWT_EXPIRE_MINUTES", "1440"))  # 默认 24 小时
+    expire = datetime.now(timezone.utc) + timedelta(minutes=expire_minutes)
     payload = {
         "sub": str(user["id"]),
         "username": user["username"],
         "role": user.get("role", "user"),
+        "exp": expire,
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 

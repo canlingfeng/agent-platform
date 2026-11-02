@@ -148,8 +148,9 @@ def chat(req: ChatRequest, request: Request, user=Depends(get_current_user)):
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="会话不存在或无权访问")
-    # 配额闸：超支直接 429，不烧 token
-    if not user_store.check_quota(user["id"]):
+    # 配额闸（原子）：consume_quota 在同一事务里"查+扣"，超支直接 429，不烧 token，
+    # 同时把本次请求的额度先行扣掉，避免并发请求双双过闸（TOCTOU）。
+    if not user_store.consume_quota(user["id"], requests=1, tokens=0):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                             detail="今日配额已用完")
 
@@ -172,7 +173,8 @@ def chat(req: ChatRequest, request: Request, user=Depends(get_current_user)):
     # 压缩摘要回写 + 用量记账（token 由 agent.run 从 usage_metadata 提取）
     if sess.summary and sess.summary != old_summary:
         user_store.update_session_summary(req.session_id, sess.summary)
-    user_store.record_usage(user["id"], tokens=sess.token_count, requests=1)
+    # 请求数已在 consume_quota 先行扣减，这里只累计实际 token（best-effort，不重复扣请求）
+    user_store.record_usage(user["id"], tokens=sess.token_count, requests=0)
     # 刷新 updated_at：消息进的是 checkpointer，sessions 表不会被碰，
     # 不主动更新则列表顺序停留在创建顺序，"最近活跃"排不上来
     user_store.touch_session(req.session_id, user["id"])
@@ -195,7 +197,7 @@ async def chat_stream(req: ChatRequest, request: Request,
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="会话不存在或无权访问")
-    if not user_store.check_quota(user["id"]):
+    if not user_store.consume_quota(user["id"], requests=1, tokens=0):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                             detail="今日配额已用完")
 
@@ -215,6 +217,7 @@ async def chat_stream(req: ChatRequest, request: Request,
     }
     total_tokens = 0
     loop = asyncio.get_event_loop()
+    stop_event = threading.Event()  # 客户端断开时通知 producer 尽快退出，避免断连后还白跑 LLM
 
     async def event_gen():
         nonlocal total_tokens
@@ -256,8 +259,11 @@ async def chat_stream(req: ChatRequest, request: Request,
                                 return
                             if content and mtype == "ai":
                                 asyncio.run_coroutine_threadsafe(queue.put(content), loop)
-            except Exception as e:  # 流式过程出错也要让客户端感知
-                asyncio.run_coroutine_threadsafe(queue.put(f"[错误] {e}"), loop)
+            except Exception:  # 流式过程出错也要让客户端感知，但不泄露内部异常原文
+                logging.getLogger(__name__).exception("chat_stream producer failed")
+                asyncio.run_coroutine_threadsafe(
+                    queue.put("[错误] 服务内部错误，请稍后重试"), loop
+                )
             finally:
                 reset_identity(token)
                 asyncio.run_coroutine_threadsafe(queue.put(None), loop)
@@ -269,8 +275,9 @@ async def chat_stream(req: ChatRequest, request: Request,
         # 导致前端要等模型全部生成完才一次性收到所有帧（假流式/攒批）。
         producer_task = loop.run_in_executor(None, producer)
         while True:
-            # 客户端断开（点了停止 / 关页面）→ 不再白跑，直接收尾
+            # 客户端断开（点了停止 / 关页面）→ 通知 producer 停，不再白跑 LLM，然后收尾
             if await request.is_disconnected():
+                stop_event.set()
                 break
             item = await queue.get()
             if item is None:
@@ -290,7 +297,8 @@ async def chat_stream(req: ChatRequest, request: Request,
         # producer 把 None 塞进 queue 表示它已结束；此时再等待它真正退出（拿到可能的异常）
         await producer_task
         # 不论正常结束还是 ASK 挂起，本轮已产生的 token 都记账（避免漏算）
-        user_store.record_usage(user["id"], tokens=total_tokens, requests=1)
+        # 请求数已在 consume_quota 先行扣减，这里只累计实际 token（best-effort，不重复扣请求）
+        user_store.record_usage(user["id"], tokens=total_tokens, requests=0)
         # 刷新 updated_at，让最近活跃的会话排到列表前面
         user_store.touch_session(req.session_id, user["id"])
         # 只有真正跑完才发 done；ASK 挂起时由前端弹框接管，不要发 done

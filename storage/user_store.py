@@ -11,6 +11,7 @@ user_store.py — 多租户用户体系（注册 / 登录 / 配额 / 会话持�
 import uuid
 import bcrypt
 from datetime import datetime, timezone
+from pymysql.err import IntegrityError
 from storage.db import query, execute, transaction
 
 def hash_password(password: str) -> str:
@@ -22,21 +23,31 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
 
-def register(username: str, password: str) -> dict | None:  
+def register(username: str, password: str) -> dict | None:
+    """注册。返回新用户 dict；用户名冲突或并发抢注冲突返回 None（上层 auth.py 转 409）。
+
+    并发安全：先 SELECT 做快速预判（减少冲突窗口），真正落库包在事务里，
+    捕 IntegrityError（uk_users_username 唯一键冲突）——两个并发同名注册，
+    SELECT 都查不到，但只有一个 INSERT 能成功，另一个撞唯一键被回滚，
+    这里捕获后返回 None，上层统一回 409，不会出现 500。
+    """
     if query("select * from users where username=%s", (username,)):
-        return None 
+        return None
     pw_hash = hash_password(password)
     user_uuid = str(uuid.uuid4())
-    with transaction() as cur:
-        cur.execute(
-            "INSERT INTO users (uuid, username, password_hash, role, status) "
-            "VALUES (%s, %s, %s, 'user', 1)",
-            (user_uuid, username, pw_hash),
-        )
-        user_id=cur.lastrowid
-        cur.execute(
-            "INSERT INTO quotas (user_id) VALUES (%s)", (user_id,)
-        )
+    try:
+        with transaction() as cur:
+            cur.execute(
+                "INSERT INTO users (uuid, username, password_hash, role, status) "
+                "VALUES (%s, %s, %s, 'user', 1)",
+                (user_uuid, username, pw_hash),
+            )
+            user_id = cur.lastrowid
+            cur.execute(
+                "INSERT INTO quotas (user_id) VALUES (%s)", (user_id,)
+            )
+    except IntegrityError:
+        return None
     return get_user_by_uuid(user_uuid)
 
 def authenticate(username: str, password: str) -> dict | None:
@@ -94,7 +105,57 @@ def record_usage(user_id: int, tokens: int = 0, requests: int = 1,
         (user_id, today, tokens, requests, tool_calls, denied_calls),
     )
 
-
+def consume_quota(user_id: int, requests: int = 1, tokens: int = 0) -> bool:
+    """原子地校验+扣减当日配额：够则扣返回 True，不够则回滚返回 False。
+    替换原先 check_quota()(读) 与 record_usage()(写) 分离导致的 TOCTOU 竞态：
+    原来"读配额 →（中间隔一次 LLM 调用）→ 写用量"两步不在同一事务，并发请求
+    可双双过闸；这里用 SELECT ... FOR UPDATE 悲观锁把"查+扣"锁进同一事务。
+    """
+    class _OverQuota(Exception):
+        pass
+    today = datetime.now(timezone.utc).date()
+    try:
+        with transaction() as cur:
+            # ① 悲观锁：锁住本用户今日的用量行，防止并发请求同时读到旧值双双过闸
+            cur.execute(
+                "SELECT used_tokens, used_requests FROM usage_daily "
+                "WHERE user_id=%s AND usage_date=%s FOR UPDATE",
+                (user_id, today),
+            )
+            row = cur.fetchone()
+            if row is None:
+                # 今日首请求：先占位建行（0,0），让 FOR UPDATE 有行可锁
+                cur.execute(
+                    "INSERT INTO usage_daily (user_id, usage_date, used_tokens, used_requests) "
+                    "VALUES (%s, %s, 0, 0)",
+                    (user_id, today),
+                )
+                row = {"used_tokens": 0, "used_requests": 0}
+            # ② 读配额（同一连接，无需再加锁）：配额行与用量行是 1:1，不会被并发改
+            cur.execute(
+                "SELECT daily_token_limit, daily_request_limit FROM quotas WHERE user_id=%s",
+                (user_id,),
+            )
+            q = cur.fetchone()
+            if not q:
+                return False
+            # ③ 判定超支：剩余额度不够就抛异常 → transaction() 的 except 回滚（锁释放）
+            if (row["used_tokens"] + tokens > q["daily_token_limit"]
+                    or row["used_requests"] + requests > q["daily_request_limit"]):
+                raise _OverQuota
+            # ④ 扣减：同一行 ON DUPLICATE KEY UPDATE 原子累加（行已存在，走 UPDATE 分支）
+            cur.execute(
+                "INSERT INTO usage_daily "
+                "(user_id, usage_date, used_tokens, used_requests) "
+                "VALUES (%s, %s, %s, %s) AS new "
+                "ON DUPLICATE KEY UPDATE "
+                "used_tokens = usage_daily.used_tokens + new.used_tokens, "
+                "used_requests = usage_daily.used_requests + new.used_requests",
+                (user_id, today, tokens, requests),
+            )
+            return True
+    except _OverQuota:
+        return False
 def create_session(user_id: int, title: str = "") -> str:
     session_id = str(uuid.uuid4())
     execute("INSERT INTO sessions (id, user_id, title) VALUES (%s, %s, %s)",
@@ -108,6 +169,7 @@ def list_sessions(user_id: int) -> list[dict]:
         "WHERE user_id=%s AND deleted_at IS NULL ORDER BY updated_at DESC",
         (user_id,),
     )
+
 
 
 def get_session_for_user(session_uuid: str, user_id: int) -> dict | None:
@@ -155,7 +217,7 @@ def delete_session(session_id: str, user_id: int) -> bool:
     return affected > 0
 
 
-if __name__ == "__  main__":
+if __name__ == "__main__":
     uname = f"smoke_{uuid.uuid4().hex[:8]}"
     u = register(uname, "Passw0rd!")
     print("register ->", u)
