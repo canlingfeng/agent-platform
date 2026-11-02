@@ -125,8 +125,15 @@ function renderSessions() {
     time.className = "si-time";
     time.textContent = relTime(s.created_at);  // 相对时间，如 "3 天前"
 
+    const del = document.createElement("button");
+    del.className = "si-del";
+    del.textContent = "×";
+    del.title = "删除会话";
+    del.onclick = (e) => { e.stopPropagation(); deleteSessionUI(s.id); };
+
     li.appendChild(title);
     li.appendChild(time);
+    li.appendChild(del);
     box.appendChild(li);
   }
 }
@@ -137,6 +144,27 @@ async function newSession() {
   state.sessions.unshift(s);           // 插到列表最前
   renderSessions();
   selectSession(s.id);
+}
+
+// 删除会话：确认 → 调后端软删 → 本地列表移除；删的是当前会话则清空右侧
+async function deleteSessionUI(id) {
+  if (!confirm("确认删除该会话？删除后列表与历史访问立即消失。")) return;
+  try {
+    await api.deleteSession(id);
+  } catch (e) {
+    alert("删除失败：" + e.message);
+    return;
+  }
+  state.sessions = state.sessions.filter((s) => s.id !== id);
+  if (state.currentId === id) {
+    state.currentId = null;
+    state.messages = [];
+    $("messages").innerHTML = "";
+    $("chat-title").textContent = "新会话";
+    $("chat-meta").textContent = "";
+    toggleEmpty();
+  }
+  renderSessions();
 }
 
 // 选中会话：更新顶栏标题 → 清空消息区 → 拉历史并逐条渲染
@@ -230,7 +258,20 @@ function onPaste(e) {
 async function send() {
   const input = $("input");
   const text = input.value.trim();
-  if (!state.currentId) return;
+  if (!state.currentId) {
+    // 没选中会话 → 自动建一个再发。
+    // 修复：原来这里静默 return，用户没点过会话时按回车毫无反应（纯 UX bug）。
+    try {
+      const s = await api.createSession("新会话");
+      state.sessions.unshift(s);
+      state.currentId = s.id;
+      renderSessions();
+      $("chat-title").textContent = s.title || "新会话";
+    } catch (e) {
+      addMessage("ai", "[错误] 创建会话失败：" + e.message);
+      return;
+    }
+  }
   // 正在流式：不直接丢弃，把当前输入框文字排进队列，流结束自动发
   if (state.streaming) {
     if (text) state.queue.push(text);    // 只排文字消息（图片排队较复杂，先不做）
@@ -329,7 +370,8 @@ function closeConfirmModal() {
 // 用户点击"允许执行 / 拒绝"：调后端 /chat/confirm，把命令输出作为一条 AI 消息追加
 // （方案 A：确认结果直接落界面，不回灌 LangGraph，简单且可审计）
 async function onAskConfirm(decision) {
-  if (!confirmState) return;
+  // 防卡死：弹窗可见但状态丢失（如异常时序）也要能关掉，不能让按钮变摆设
+  if (!confirmState) { closeConfirmModal(); return; }
   const { cmd, sid } = confirmState;
   closeConfirmModal();
   // 先放一条占位 AI 气泡，执行完再填结果（命令执行可能耗时，给即时反馈）
@@ -492,6 +534,115 @@ async function applyCustomModel() {
   }
 }
 
+// ==================== 知识库（RAG） ====================
+
+// 浮层内的状态提示：成功绿色、失败红色
+function setKbMsg(msg, isError) {
+  const el = $("kb-msg");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.style.color = isError ? "#b3261e" : "#137333";
+}
+
+// 拉取并渲染"我的文档"列表；每项带删除按钮
+async function loadKbDocs() {
+  const box = $("kb-docs");
+  if (!box) return;
+  box.innerHTML = "";
+  try {
+    const docs = await api.listDocuments();
+    if (!docs.length) {
+      const li = document.createElement("li");
+      li.className = "kb-empty";
+      li.textContent = "（暂无文档，先在下方入库）";
+      box.appendChild(li);
+      return;
+    }
+    for (const d of docs) {
+      const li = document.createElement("li");
+
+      const name = document.createElement("span");
+      name.className = "kb-name";
+      // source 可为空 → 用 doc_id 前 8 位兜底，避免显示空白行
+      name.textContent = d.source || ("doc " + String(d.doc_id).slice(0, 8));
+      name.title = "doc_id: " + d.doc_id;   // 悬停看完整 id，便于核对
+
+      const del = document.createElement("button");
+      del.className = "kb-del";
+      del.textContent = "删除";
+      del.onclick = () => deleteKbDoc(d.doc_id);
+
+      li.appendChild(name);
+      li.appendChild(del);
+      box.appendChild(li);
+    }
+  } catch (e) {
+    console.error("加载文档列表失败", e);
+    setKbMsg("加载失败：" + e.message, true);
+  }
+}
+
+// 入库：文本必填、来源可选；成功后清空输入并刷新列表
+async function ingestKb() {
+  const text = ($("kb-text").value || "").trim();
+  const source = ($("kb-source").value || "").trim();
+  if (!text) { setKbMsg("请先粘贴要入库的文本", true); return; }
+  setKbMsg("入库中…", false);
+  try {
+    const r = await api.ingestText(text, source);
+    setKbMsg("已入库，doc_id：" + r.doc_id, false);
+    $("kb-text").value = "";
+    $("kb-source").value = "";
+    await loadKbDocs();
+  } catch (e) {
+    setKbMsg("入库失败：" + e.message, true);
+  }
+}
+
+// 删除：二次确认防误删，成功后刷新列表
+async function deleteKbDoc(docId) {
+  if (!confirm("确认删除该文档？删除后不可恢复。")) return;
+  try {
+    const r = await api.deleteDocument(docId);
+    setKbMsg("已删除 " + (r.deleted ?? 0) + " 个分块", false);
+    await loadKbDocs();
+  } catch (e) {
+    setKbMsg("删除失败：" + e.message, true);
+  }
+}
+
+// 上传文件：选完即传（不用再点"入库"），成功后刷新列表
+// 注意 input.value 必须清空——否则第二次选同一个文件不会触发 change 事件（浏览器按值判重）
+async function uploadKbFile(ev) {
+  const input = ev.target;
+  const file = input.files && input.files[0];
+  if (!file) return;
+
+  const label = $("kb-file-name");
+  const btn = $("btn-kb-file");
+  label.textContent = file.name;
+
+  if (file.size > 5 * 1024 * 1024) {          // 前端先挡一次，省一次往返；后端仍会独立校验
+    setKbMsg("文件超过 5MB 上限", true);
+    input.value = "";
+    return;
+  }
+
+  btn.disabled = true;
+  setKbMsg("上传中… " + Math.max(1, Math.round(file.size / 1024)) + " KB", false);
+  try {
+    const r = await api.uploadDocument(file);
+    setKbMsg(`已入库「${r.source}」：${r.chars} 字，doc_id ${r.doc_id}`, false);
+    label.textContent = "txt / md / log / csv，≤5MB";
+    await loadKbDocs();
+  } catch (e) {
+    setKbMsg("上传失败：" + e.message, true);
+  } finally {
+    btn.disabled = false;
+    input.value = "";
+  }
+}
+
 // 拉会话状态：消息条数 + 上下文压缩情况，渲染在顶栏标题旁
 // my 是调用方（selectSession）抢占的请求序号，两个请求共用一个守卫，
 // 避免 refreshSessionStatus 自己再 ++reqSeq 把上一条请求判成过期
@@ -519,7 +670,10 @@ function togglePopover(id) {
   const willShow = target.hidden;
   $("pop-perm").hidden = true;
   $("pop-model").hidden = true;
+  $("pop-kb").hidden = true;
   target.hidden = !willShow;
+  // 打开知识库浮层时拉一次文档列表（每次打开都刷新，避免显示过期数据）
+  if (id === "pop-kb" && willShow) loadKbDocs();
 }
 
 // ==================== 界面切换 ====================
@@ -544,6 +698,10 @@ window.addEventListener("DOMContentLoaded", () => {
   // 胶囊点击 → 弹出对应浮层；stopPropagation 防止被下面的全局关闭逻辑立刻关掉
   $("pill-perm").onclick = (e) => { e.stopPropagation(); togglePopover("pop-perm"); };
   $("pill-model").onclick = (e) => { e.stopPropagation(); togglePopover("pop-model"); };
+  $("pill-kb").onclick = (e) => { e.stopPropagation(); togglePopover("pop-kb"); };
+  $("btn-kb-ingest").onclick = ingestKb;
+  $("btn-kb-file").onclick = () => $("kb-file").click();  // 自定义按钮转调隐藏的 file input
+  $("kb-file").onchange = uploadKbFile;
   $("btn-attach").onclick = onAttachClick;
   $("file-input").onchange = onFileChange;
   document.addEventListener("paste", onPaste);   // Ctrl+V 粘贴图片到聊天框
@@ -556,6 +714,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!e.target.closest(".popover") && !e.target.closest(".pill")) {
       $("pop-perm").hidden = true;
       $("pop-model").hidden = true;
+      $("pop-kb").hidden = true;
     }
   });
 

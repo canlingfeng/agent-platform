@@ -207,3 +207,76 @@ export async function confirmCommand(sessionId, command, decision) {
   }
   return r.json();   // { result: "..." }
 }
+
+// ==================== 知识库（RAG） ====================
+
+// 提取后端错误体里的人类可读文案：{"detail": "..."} 或 {"detail": {"message": "..."}}
+async function errorMessage(r, fallback) {
+  let msg = fallback + " " + r.status;
+  try {
+    const body = await r.json();
+    const d = body.detail;
+    if (typeof d === "string") msg = d;
+    else if (d && typeof d === "object" && d.message) msg = d.message;
+  } catch { /* 非 JSON 错误体，保留默认文案 */ }
+  return msg;
+}
+
+// 知识库入库：POST /api/v1/rag/ingest → { doc_id }
+// 后端会切块 → embedding → 写入当前用户的独立 collection（rag_user_{id}）
+export async function ingestText(text, source = "") {
+  const r = await fetch("/api/v1/rag/ingest", {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({ text, source }),
+  });
+  if (r.status === 401) { clearToken(); throw new Error("登录已失效"); }
+  if (!r.ok) throw new Error(await errorMessage(r, "入库失败"));
+  return r.json();
+}
+
+// 我的文档列表：GET /api/v1/rag/documents → [{ doc_id, source }]
+export async function listDocuments() {
+  const r = await fetch("/api/v1/rag/documents", { headers: authHeaders() });
+  if (r.status === 401) { clearToken(); throw new Error("登录已失效"); }
+  if (!r.ok) throw new Error(await errorMessage(r, "拉取文档列表失败"));
+  return r.json();
+}
+
+// 删除文档：DELETE /api/v1/rag/documents/{doc_id} → { deleted }
+// doc_id 是 32 位十六进制，encodeURIComponent 防止特殊字符破坏 URL
+export async function deleteDocument(docId) {
+  const r = await fetch(`/api/v1/rag/documents/${encodeURIComponent(docId)}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (r.status === 401) { clearToken(); throw new Error("登录已失效"); }
+  if (!r.ok) throw new Error(await errorMessage(r, "删除失败"));
+  return r.json();
+}
+
+// 上传文本文件入库：POST /api/v1/rag/upload（multipart/form-data）
+// 关键：不能用 authHeaders()——它会带 Content-Type: application/json，把 multipart 顶掉。
+// 上传必须让浏览器自己生成 Content-Type（含 boundary 分隔符），所以只带 Authorization。
+export async function uploadDocument(file) {
+  const form = new FormData();       // FormData = 浏览器原生 multipart 构造器
+  form.append("file", file);         // 字段名必须是 file，与后端 File(...) 的参数名一致
+  const h = {};
+  const t = getToken();
+  if (t) h["Authorization"] = "Bearer " + t;
+  const r = await fetch("/api/v1/rag/upload", { method: "POST", headers: h, body: form });
+  if (r.status === 401) { clearToken(); throw new Error("登录已失效"); }
+  if (!r.ok) throw new Error(await errorMessage(r, "上传失败"));
+  return r.json();   // { doc_id, source, chars }
+}
+
+// 删除会话（软删除）：DELETE /api/v1/sessions/{id} → { deleted: true }
+export async function deleteSession(sessionId) {
+  const r = await fetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (r.status === 401) { clearToken(); throw new Error("登录已失效"); }
+  if (!r.ok) throw new Error(await errorMessage(r, "删除会话失败"));
+  return r.json();
+}

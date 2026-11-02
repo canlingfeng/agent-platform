@@ -117,6 +117,29 @@ def get_session_status(session_id: str, request: Request, user=Depends(get_curre
     )
 
 
+@router.delete("/sessions/{session_id}")
+def delete_session(session_id: str, request: Request, user=Depends(get_current_user)):
+    """删除会话（软删除）：非本人会话一律 404（IDOR 防护）。
+
+    软删 = sessions.deleted_at 置时间戳：列表立刻消失、所有访问路径
+    （get_session_for_user 过滤 deleted_at IS NULL）立即 404，数据留库可审计。
+    LangGraph 检查点尽力清理：saver 版本支持 delete_thread 才调，失败/不支持
+    都不影响删除本身——会话已软删，残留检查点没有访问路径，只是存储占位。
+    """
+    row = user_store.get_session_for_user(session_id, user["id"])
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="会话不存在或无权访问")
+    user_store.delete_session(session_id, user["id"])
+    purge = getattr(request.app.state.agent.checkpointer, "delete_thread", None)
+    if callable(purge):
+        try:
+            purge(session_id)
+        except Exception:
+            pass
+    return {"deleted": True}
+
+
 @router.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest, request: Request, user=Depends(get_current_user)):
     agent = request.app.state.agent

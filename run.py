@@ -37,6 +37,12 @@ load_dotenv(_ENV_FILE, override=True)
 import uvicorn  # noqa: E402  （放在 load_dotenv 之后：确保导入 app 前环境变量已就绪）
 
 if __name__ == "__main__":
+    # 启动即把访问地址打到控制台：不用记端口，复制链接直接进（reload 子进程不会重复打印，
+    # 因为这段只在父进程的 __main__ 里执行一次）
+    print("=" * 56)
+    print("  Web UI   :  http://127.0.0.1:8000/")
+    print("  API 文档 :  http://127.0.0.1:8000/docs")
+    print("=" * 56)
     uvicorn.run(
         "api.app:app",
         host="0.0.0.0",

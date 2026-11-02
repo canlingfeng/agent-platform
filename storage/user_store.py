@@ -139,6 +139,22 @@ def touch_session(session_id: str, user_id: int) -> None:
     )
 
 
+def delete_session(session_id: str, user_id: int) -> bool:
+    """软删除会话：deleted_at 置时间戳，列表与所有访问路径立即消失。
+
+    为什么软删：list_sessions / get_session_for_user 都过滤 deleted_at IS NULL，
+    置了时间戳即等效"消失"，但数据留库可审计（与 audit_logs 留存思路一致）。
+    必须同时带 user_id——与 touch_session 同理，只按 session_id 删等于放弃租户隔离。
+    返回是否真的删了一行（False = 不存在 / 已删 / 不是你的）。
+    """
+    affected = execute(
+        "UPDATE sessions SET deleted_at=CURRENT_TIMESTAMP(3) "
+        "WHERE id=%s AND user_id=%s AND deleted_at IS NULL",
+        (session_id, user_id),
+    )
+    return affected > 0
+
+
 if __name__ == "__  main__":
     uname = f"smoke_{uuid.uuid4().hex[:8]}"
     u = register(uname, "Passw0rd!")

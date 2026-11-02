@@ -82,6 +82,7 @@
             <button class="icon-btn" id="btn-attach" title="上传图片/视频">+</button>
             <input type="file" id="file-input" accept="image/*,video/*" multiple hidden />
             <button class="pill" id="pill-perm" title="查看权限裁决规则">默认权限 <span class="chev">⌄</span></button>
+            <button class="pill" id="pill-kb" title="知识库：入库 / 查看 / 删除文档">知识库 <span class="chev">⌄</span></button>
             <textarea id="input" rows="1" placeholder="输入消息，回车发送"></textarea>
             <button class="pill pill-model" id="pill-model" title="查看当前模型">
               <span class="spark">✦</span> <span id="model-name">加载中…</span> <span class="chev">⌄</span>
@@ -116,6 +117,26 @@
             <p class="pop-line pop-warn">切换后该服务商需有可用密钥，否则对话会调用失败</p>
             <p class="pop-label">已注册工具</p>
             <ul id="model-tools"></ul>
+          </div>
+
+          <!-- 知识库浮层：文件上传 / 文本入库 / 文档列表 / 删除 -->
+          <div class="popover" id="pop-kb" hidden>
+            <h4>知识库</h4>
+            <p class="pop-label">上传文件</p>
+            <!-- accept 只做前端过滤（用户仍可强选别的），真正的白名单校验在后端 -->
+            <input type="file" id="kb-file" accept=".txt,.md,.markdown,.log,.csv" hidden />
+            <div class="kb-upload">
+              <button id="btn-kb-file" class="kb-file-btn">选择文件</button>
+              <span id="kb-file-name" class="kb-file-name">txt / md / log / csv，≤5MB</span>
+            </div>
+            <p class="pop-label">或粘贴文本</p>
+            <textarea id="kb-text" class="kb-textarea" rows="3"
+                      placeholder="粘贴要入库的文本（自动切块并向量化）"></textarea>
+            <input id="kb-source" class="kb-input" placeholder="来源（可选），如 manual.pdf" />
+            <button id="btn-kb-ingest" class="kb-submit">入库</button>
+            <p class="pop-label">我的文档</p>
+            <ul id="kb-docs" class="kb-docs"></ul>
+            <p class="pop-line pop-warn" id="kb-msg"></p>
           </div>
         </div>
       </main>

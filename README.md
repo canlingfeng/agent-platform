@@ -28,6 +28,10 @@ Agent 在受限工具集内自主调用工具完成多轮任务，所有工具�
 - **前端可视化模型切换**：点模型胶囊切换 9 家供应商 + 自定义（Base URL / 模型名 / 密钥），支持图片的模型带标注
 - **图片/视频上传（多模态）**：上传端点 + 缩略图 / Ctrl+V 粘贴；模型能力检测——纯文本模型明确返回「模型不支持」，不伪装成 agent 错误
 - **SSE 流式 JSON 编码**：载荷 JSON 化，修复 AI 回复空行切断 SSE 帧导致后半段丢失
+- **RAG 知识库检索**：Milvus 向量库 + `bge-m3` 嵌入 + `bge-reranker` 重排；每个用户独立 collection（`rag_user_{id}`）物理隔离，`rag_search` 工具让 LLM 在对话中自主检索用户私有知识
+- **知识库文件上传**：前端「知识库」浮层直接传 `.txt/.md/.markdown/.log/.csv`（≤5MB），选完即传；服务端做扩展名白名单 + 体积上限 + 编码兜底（UTF-8 / UTF-8-BOM / GBK），识别不了就明确拒绝，不把乱码写进向量库
+- **ASK 三态交互确认**：命令命中 `ASK` 时 SSE 主动挂起，前端弹框让用户「允许 / 拒绝」；确认端点**重跑 `decide()`** 挡掉 `DENY`，防止伪造 `approve` 绕过白名单
+- **会话软删除**：删除只置 `sessions.deleted_at` 时间戳，列表与历史查询统一过滤；检查点尽力 `delete_thread` 清理
 
 ---
 
@@ -42,9 +46,11 @@ Agent 在受限工具集内自主调用工具完成多轮任务，所有工具�
 | LLM 客户端 | **langchain-openai** `ChatOpenAI` | 走 OpenAI 兼容协议，一套客户端打通所有供应商 |
 | 数据库 | **MySQL 8.4** LTS | 关系数据 + LangGraph 检查点三表 |
 | 数据库驱动 | **PyMySQL** | 纯 Python 实现，跨平台免编译 |
+| 向量库 | **Milvus**（standalone） | RAG 检索；每用户独立 collection 物理隔离，`bge-m3` 嵌入 + `bge-reranker` 重排 |
+| 文件上传 | **python-multipart** | 解析 `multipart/form-data`，`File` / `UploadFile` 的硬依赖（图片视频上传、知识库文件上传） |
 | 密码安全 | **bcrypt** | 自适应慢哈希，哈希串自带 salt |
 | 容器化 | **Docker** + **Docker Compose** | 单镜像 + db 服务编排，配置经 `.env` 外置 |
-| 测试 | **pytest** | `tests/test_permission.py` 权限闸门单测 |
+| 测试 | **pytest** | `tests/test_permission.py` 权限闸门单测、`tests/test_embedding.py` embedding 能力 |
 
 > 早期 Gradio 界面（`webui.py`）已于 2026-10-21 归档至 `_deprecated/`，
 > `gradio` 依赖随之从 `requirements.txt` 移除（全项目确认无其他引用）。
@@ -61,7 +67,7 @@ flowchart LR
     API --> AG[Agent.run / graph.stream]
     AG --> PG[agent_graph<br/>LangGraph StateGraph]
     PG --> LLM[ChatOpenAI<br/>多供应商热切换]
-    PG --> TOOLS[ToolRegistry<br/>6 个工具]
+    PG --> TOOLS[ToolRegistry<br/>7 个工具]
     TOOLS --> PERM[permission.decide<br/>三态闸门]
     PG --> CP[PyMySQLSaver<br/>检查点]
     AUTH --> US[(user_store<br/>多租户隔离)]
@@ -75,12 +81,14 @@ flowchart LR
 - `api/app.py` — FastAPI 入口；lifespan 构建 checkpointer + Agent 单例挂 `app.state`；API 路由之后挂载静态前端
 - `api/auth.py` — 注册 / 登录，签发 JWT
 - `api/chat.py` — 会话 CRUD、历史回看、会话状态、同步/流式对话（SSE）
-- `api/config.py` — 运行配置查询（模型 / 工具 / 权限规则，**脱敏不含 api_key**）
+- `api/config.py` — 运行配置查询（模型 / 工具 / 权限规则，**脱敏不含 api_key**）+ 供应商列出与热切换
+- `api/upload.py` — 图片/视频上传：租户隔离落 `workspace/{user_id}/uploads/`、20MB 上限、模型能力闸门（不支持多模态直接 400）
+- `api/rag.py` — 知识库 CRUD：文本入库、文件上传（白名单 + 编码兜底）、文档列举、按 `doc_id` 删除，全部按 `user["id"]` 隔离
 - `api/deps.py` — JWT 签发与 `get_current_user` 依赖
 - `api/schemas.py` — Pydantic 请求/响应模型（`response_model` 兼做字段白名单）
 - `core/agent.py` — `Agent` 类：工具注册表、LLM 配置加载（环境变量优先，`config.json` 回落）、`configure()` 热切换、`run()` 驱动图执行、`_compress()` 上下文压缩
 - `core/agent_graph.py` — `build_agent_graph()`：LangGraph `StateGraph` 编排「模型调用 → 工具调用 → 回环」循环
-- `core/tools.py` — `TOOLS` 工具注册表，6 个工具：文件读写、列目录、命令执行、天气、时间
+- `core/tools.py` — `TOOLS` 工具注册表，7 个工具：文件读写、列目录、命令执行、天气、时间、`rag_search`（知识库检索）
 - `core/permission.py` — `decide()` 权限闸门，`_subject()` 审计 subject，路径根隔离 + shell 元字符过滤
 - `core/providers.py` — `PRESETS` 对话供应商目录 + `resolve()` 解析；`PROVIDER_BASE_URLS` / `CAPABILITY_DEFAULTS` / `provider_capabilities()` 供能力层复用
 - `core/models.py` — **模型注册表**：`resolve(capability)` 按能力（chat / embedding / rerank）解析出 `ModelSpec`，全项目唯一的模型解析入口
@@ -109,10 +117,10 @@ agent_demo/
 ├── .dockerignore         # 构建上下文排除（config.json/.env/缓存/_deprecated）
 ├── .env.example          # 环境变量模板（cp .env.example .env）
 ├── api/                  # FastAPI 路由层
-│   ├── app.py  auth.py  chat.py  config.py  deps.py  schemas.py  upload.py
+│   ├── app.py  auth.py  chat.py  config.py  deps.py  schemas.py  upload.py  rag.py
 ├── core/                 # Agent 编排 + 权限 + 工具
 │   ├── agent.py  agent_graph.py  agent_state.py  context.py
-│   ├── tools.py  permission.py  prompt.py  providers.py
+│   ├── tools.py  permission.py  prompt.py  providers.py  models.py  rag_store.py
 ├── storage/              # MySQL 数据层
 │   ├── db.py  checkpointer.py  session.py  user_store.py  audit.py
 ├── static/               # 原生 JS 前端（PWA）
@@ -126,7 +134,8 @@ agent_demo/
 ├── docs/
 │   └── ARCHIVED.md       # 已移除代码的归档与优化说明
 └── tests/
-    └── test_permission.py
+    ├── test_permission.py      # 权限闸门单测（三态裁决 / 元字符 / 路径越界）
+    └── test_embedding.py       # embedding 能力解析与调用
 ```
 
 ---
@@ -138,7 +147,7 @@ agent_demo/
 | 表 | 作用 | 关键设计 |
 |---|---|---|
 | `users` | 用户 | 自增 `id`（聚簇主键，顺序插入无页分裂）+ `uuid`(对外 ID，防枚举) + `password_hash`(bcrypt) |
-| `sessions` | 会话 | `id`=UUID 且作为 LangGraph `thread_id`；`user_id` 多租户隔离键；`summary` 压缩长期记忆 |
+| `sessions` | 会话 | `id`=UUID 且作为 LangGraph `thread_id`；`user_id` 多租户隔离键；`summary` 压缩长期记忆；`deleted_at` 软删除标记（查询统一过滤） |
 | `messages` | 消息 | 拆表而非塞 JSON 列：避免写放大、支持分页、避免并发覆盖；`seq` 会话内递增序号 |
 | `audit_logs` | 审计 | `decision` 三态枚举；外键 `ON DELETE SET NULL`（用户注销后审计留存，合规凭证） |
 | `quotas` | 配额 | 每用户每日 token / 请求上限、QPS、并发会话上限 |
@@ -160,12 +169,18 @@ LangGraph 检查点三表（`checkpoints` / `checkpoint_writes` / `checkpoint_bl
 | POST | `/api/v1/sessions` | 新建会话 |
 | GET | `/api/v1/sessions/{id}/messages` | 会话历史（从 checkpointer 恢复） |
 | GET | `/api/v1/sessions/{id}/status` | 消息条数 + 上下文压缩状态 |
+| DELETE | `/api/v1/sessions/{id}` | 删除会话（软删除；非本人 404，检查点尽力清理） |
 | GET | `/api/v1/config` | 运行配置：provider / model / 工具 / 权限规则（**不含 api_key**） |
 | GET | `/api/v1/providers` | 可选**对话**模型列表（含 supports_images 标注；按 chat 能力过滤，不含 embedding/rerank） |
 | POST | `/api/v1/config` | 切换供应商/模型（热切换 + 持久化；custom 需 base_url + model） |
 | POST | `/api/v1/upload` | 图片/视频上传（含模型能力闸门，不支持返回 400） |
 | POST | `/api/v1/chat` | 同步对话 |
-| POST | `/api/v1/chat/stream` | SSE 流式对话（增量输出） |
+| POST | `/api/v1/chat/stream` | SSE 流式对话（增量输出；命中 ASK 时发 `{"ask": cmd}` 帧并挂起） |
+| POST | `/api/v1/chat/confirm` | ASK 三态确认（`allow` 才执行；重跑 `decide()`，`DENY` 返回 403） |
+| POST | `/api/v1/rag/ingest` | 知识库入库（文本 + 来源，自动切块向量化） |
+| POST | `/api/v1/rag/upload` | 知识库**文件**上传（`.txt/.md/.markdown/.log/.csv`，≤5MB，UTF-8/GBK 自动识别） |
+| GET | `/api/v1/rag/documents` | 我的知识库文档列表 |
+| DELETE | `/api/v1/rag/documents/{doc_id}` | 删除我的文档（越权/不存在返回 404） |
 | GET | `/health` | 健康检查 |
 
 交互式文档：启动后访问 `/docs`（Swagger UI）。
@@ -288,6 +303,7 @@ pytest tests/
 - **对外 ID**：用户/会话用 UUIDv4，`users.id` 仅作内部聚簇主键，杜绝 IDOR / 顺序枚举
 - **多租户隔离**：任何涉及 session 的操作先 `get_session_for_user(session_id, user_id)` 越权校验，非本人会话一律 404
 - **权限闸门**：`execute_command` 含 shell 元字符（`| ; & < > \` $()` 等）直接 `DENY`；文件工具限定在 `workspace` 根内（`os.path.commonpath` 防越界）；白名单命令 `ALLOW`，其余 `ASK`
+- **上传校验**：扩展名 / MIME 白名单 + 体积上限（图片视频 20MB、知识库 5MB）+ `pathlib.Path(name).name` 剥目录防路径穿越；知识库文本走 UTF-8 → GBK 编码兜底，都失败即 400（乱码不进向量库）
 - **审计**：每次裁决旁路落 `audit_logs`，外键 `ON DELETE SET NULL` 保证用户注销后审计留存
 - **配置外置**：数据库密码、API Key、JWT 密钥走环境变量；`config.json` 与 `.env` 均在 `.gitignore` 与 `.dockerignore` 中。模型选择同样外置——调用方只写能力名，具体模型由 `core/models.py` 按「环境变量 > config.json > 默认值」解析
 - **最小密钥面**：`config.json` 不存明文密钥，密钥一律来自环境变量；仅 `provider=custom`（无对应环境变量）例外
@@ -345,10 +361,14 @@ pytest tests/
 - ✅ 图片/视频上传 + 模型能力检测（纯文本模型明确返回「模型不支持」）
 - ✅ Ctrl+V 粘贴图片 + 缩略图预览
 - ✅ SSE 流式 JSON 编码（修复空行切断帧）
+- ✅ RAG 知识库检索（Milvus + `bge-m3` 嵌入 + `bge-reranker` 重排）：检索层 / 工具注册 / HTTP 接口 / 应用挂载 / 端到端验证，Layer 1-5 全链路完成
+- ✅ 知识库文件上传（multipart，扩展名白名单 + 5MB 上限 + 编码自动识别）+ 前端「知识库」浮层上传入口
+- ✅ ASK 三态交互确认（SSE 挂起 + 前端弹框 + 服务端重跑 `decide()` 防绕过）
+- ✅ 会话软删除（`deleted_at` + 前端悬停「×」删除）+ 打断/停止生成（AbortController）
+- ✅ 模型注册表 `core/models.py`：`resolve(capability)` 按能力解析 chat / embedding / rerank，`Agent` 与 RAG 共用同一入口
 
 ### 📋 路线图（未开始）
 
-- [ ] RAG / 向量库（Chroma 起步 → Qdrant）
 - [ ] MCP 协议支持
 - [ ] 派工式多 Agent（子 Agent 上下文隔离、权限收敛）
 - [ ] 前端「任务 + 技能」体系（用户可创建自定义技能）
