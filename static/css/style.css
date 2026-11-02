@@ -183,7 +183,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; background:
   flex-shrink: 0; font-size: 11px; padding: 1px 6px; border-radius: 10px;
   background: #e6f4ea; color: #137333; border: 1px solid #ceead6;
 }
-.pop-warn { color: #b3261e !important; font-size: 11.5px; }
+.pop-warn { color: #b3261e; font-size: 11.5px; }
 
 /* 自定义模型表单：三项竖排 */
 .custom-form { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; }
