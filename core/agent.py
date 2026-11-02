@@ -1,6 +1,5 @@
 import os
 os.environ["LANGGRAPH_STRICT_MSGPACK"] = "true"
-import json
 import requests
 import httpx
 from core.tools import TOOLS, langchain_tools
@@ -8,7 +7,8 @@ from langchain_openai import ChatOpenAI
 from core.agent_graph import build_agent_graph
 from langgraph.checkpoint.memory import MemorySaver 
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
-from core.providers import PRESETS, resolve
+from core.providers import resolve as resolve_provider
+from core.models import resolve as resolve_model
 
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json")
@@ -27,45 +27,21 @@ class Agent:
         self.max_history = 20
         self.tools_lc = langchain_tools
 
-        # ---- LLM 配置：默认兜底 → config.json 恢复 → _build_llm 构造 ----
-        self.provider = "modelscope"
-        self.base_url = PRESETS["modelscope"]["base_url"]
-        self.model = PRESETS["modelscope"]["model"]
+        # ---- LLM 配置：走 ModelRegistry 唯一入口 ----
+        # resolve("chat") 内部按「环境变量 > config.json（兼容顶层旧格式）> 默认值」
+        # 三层解析，密钥只从环境变量读（provider=custom 例外，回落到 config.json）。
+        # chat 与 embedding / rerank 从此共用同一套解析逻辑，不再各写一份。
+        spec = resolve_model("chat")
+        self.provider = spec.provider
+        self.base_url = spec.base_url
+        self.model = spec.model
+        self.api_key = spec.api_key
         self.api_url = self.base_url + "/chat/completions"  # call_llm 裸 requests 路径用
-        self.api_key = os.environ.get("MODELSCOPE_API_KEY")
 
-        self._load_config()   # 恢复上次保存的 provider / base_url / model / api_key
         self._build_llm()     # 按最终配置构造 ChatOpenAI 并 bind_tools
 
         self.checkpointer = checkpointer if checkpointer is not None else MemorySaver()
         self.graph = build_agent_graph(self, self.checkpointer)
-
-    def _load_config(self):
-        """从 config.json 恢复 LLM 配置。
-
-        优先级：环境变量（生产注入）> config.json（网页保存）——但 **provider="custom"
-        例外**：自定义端点没有对应的环境变量，密钥只能存在 config.json，故此时以
-        配置文件里的 api_key 为准。缺字段用默认值兜底，旧版只有 api_key 的
-        config.json 也能正常加载，不会 KeyError。"""
-        try:
-            # encoding 必须显式给：Windows 下默认按 GBK 解码，config.json 含非
-            # ASCII（中文注释/label）会 UnicodeDecodeError。
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return
-        saved_provider = cfg.get("provider")
-        if saved_provider in PRESETS:      # 白名单校验，脏 provider 名直接忽略
-            self.provider = saved_provider
-        # provider 先确定，再决定密钥来源（custom 依赖配置文件里的密钥）
-        if self.provider == "custom" and cfg.get("api_key"):
-            self.api_key = cfg["api_key"]
-        elif not self.api_key:
-            self.api_key = cfg.get("api_key")
-        resolved = resolve(self.provider, cfg.get("base_url", ""), cfg.get("model", ""))
-        self.base_url = resolved["base_url"] or self.base_url
-        self.model = resolved["model"] or self.model
-        self.api_url = self.base_url + "/chat/completions"
 
     def _build_llm(self):
         """按当前 base_url / model / api_key 构造 ChatOpenAI。
@@ -86,7 +62,7 @@ class Agent:
         """热切换供应商 / 模型（webui 保存 API 设置时调用）。
         graph 不用重建：agent_graph.call_model 是运行时才取 agent.llm，
         闭包捕获的是 agent 对象，重新绑定 self.llm 下一轮 invoke 立即生效。"""
-        resolved = resolve(provider, base_url, model)
+        resolved = resolve_provider(provider, base_url, model)
         self.provider = provider
         if resolved["base_url"]:
             self.base_url = resolved["base_url"]
