@@ -8,6 +8,15 @@
 详见 docs/ARCHIVED.md 第二节。
 """
 import os
+import sys
+
+# 归档脚本位于 _deprecated/ 子目录：直接运行时项目根不在 sys.path（模块搜索路径），
+# `from core.xxx` / `from storage.xxx` 会抛 ModuleNotFoundError。
+# 用 __file__ 上跳一级定位项目根，不写死绝对路径，保证 Windows / Linux 通用。
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 os.environ["LANGGRAPH_STRICT_MSGPACK"] = "true"
 from core.agent import Agent
 from storage.session import SessionStore

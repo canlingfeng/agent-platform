@@ -15,6 +15,8 @@
 """
 import asyncio
 import json  
+import logging
+import threading
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage

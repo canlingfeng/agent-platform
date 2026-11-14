@@ -3,6 +3,8 @@ __pycache__/
 .pytest_cache/
 .git/
 .env
+.env.*
+!.env.example
 config.json
 *.bak
 *.bak2

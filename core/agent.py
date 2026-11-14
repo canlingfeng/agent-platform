@@ -3,6 +3,7 @@ os.environ["LANGGRAPH_STRICT_MSGPACK"] = "true"
 import requests
 import httpx
 from core.tools import TOOLS, langchain_tools
+from core.mcp_tools import build_mcp_tools
 from langchain_openai import ChatOpenAI
 from core.agent_graph import build_agent_graph
 from langgraph.checkpoint.memory import MemorySaver 
@@ -25,7 +26,7 @@ class Agent:
         # 更早的消息由 _compress 摘要成 session.summary，在下一轮重新进入上下文。
         # 注意：checkpointer 里仍保留全量历史，不影响 GET /sessions/{id}/messages 回看。
         self.max_history = 20
-        self.tools_lc = langchain_tools
+        self.tools_lc = langchain_tools + build_mcp_tools()
 
         # ---- LLM 配置：走 ModelRegistry 唯一入口 ----
         # resolve("chat") 内部按「环境变量 > config.json（兼容顶层旧格式）> 默认值」

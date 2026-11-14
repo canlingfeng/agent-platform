@@ -121,6 +121,9 @@ agent_demo/
 ├── core/                 # Agent 编排 + 权限 + 工具
 │   ├── agent.py  agent_graph.py  agent_state.py  context.py
 │   ├── tools.py  permission.py  prompt.py  providers.py  models.py  rag_store.py
+│   └── mcp_client.py  mcp_tools.py   # MCP 客户端运行时 / 工具注册
+├── mcp_servers/          # MCP stdio server（容器内相对路径启动）
+│   └── echo_server.py    # 连通性验收桩，stdout 只承载 JSON-RPC 帧
 ├── storage/              # MySQL 数据层
 │   ├── db.py  checkpointer.py  session.py  user_store.py  audit.py
 ├── static/               # 原生 JS 前端（PWA）
@@ -130,7 +133,9 @@ agent_demo/
 ├── _deprecated/          # 已废弃文件归档（不进镜像）
 │   ├── README.md         # 每个文件为什么不用了 + 怎么恢复
 │   ├── webui.py  main.py  debug_llm.py
-│   └── backups/          # 历史 .bak / .orig 快照
+│   ├── diag_uvicorn.py   # 临时诊断启动器（.gitignore 排除）
+│   ├── test_echo_server.py  # MCP server 早期验收桩（非单元测试）
+│   └── backups/          # 历史 .bak / .orig / .env.bak.* 快照
 ├── docs/
 │   └── ARCHIVED.md       # 已移除代码的归档与优化说明
 └── tests/

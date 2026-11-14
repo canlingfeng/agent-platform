@@ -7,8 +7,17 @@
 注意：`Agent()` 不传 checkpointer，会用进程内存版 MemorySaver——
 本脚本不落库，属预期行为（该默认值的隐患见 docs/ARCHIVED.md 第四节）。
 """
+import os
 import sys
-sys.path.insert(0, r"D:\shiyanshixiangmu\test_file\agent_demo")
+
+# 归档脚本位于 _deprecated/ 子目录：直接运行时 sys.path[0]（模块搜索路径首项）
+# 是该子目录，项目根不在其中，`from core.xxx import ...` 会抛 ModuleNotFoundError。
+# 这里用 __file__ 上跳一级定位项目根并加入 sys.path，不写死绝对路径，
+# 保证 Windows / Linux 都能解析（平台无关）。
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 from core.agent import Agent
 from langchain_core.messages import HumanMessage
 

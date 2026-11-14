@@ -1,8 +1,8 @@
 import os
 import re
+import json
 from storage.audit import record_audit_log
 from core.context import get_identity
-
 ALLOW,DENY,ASK="allow","deny","ask"
 ROOT=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),"workspace")
 EXTRA_ROOT=[]
@@ -65,6 +65,14 @@ def _has_shell_meta(command)->bool:
     """检查命令中是否包含 shell 元字符"""
     return _SHELL_META.search(command) is not None
 
+def _mcp_allow():
+    raw=os.environ.get("AGENT_MCP_ALLOW","[]")
+    try:
+        item=json.loads (raw)
+    except json.JSONDecodeError:
+        return set()
+    return set(item) if isinstance(item,list) else set()
+
 
 def decide(tool, args) -> str:
     """
@@ -89,8 +97,10 @@ def decide(tool, args) -> str:
                 if _match(white_item, command):
                     verdict = ALLOW
                     break
+    elif "__"in tool and tool in _mcp_allow():
+        verdict = ALLOW
     else:
-        verdict = DENY  
+        verdict = DENY
 
     # 审计归属：从请求上下文取用户身份。CLI 下无上下文，对应列留 NULL。
     ident = get_identity()

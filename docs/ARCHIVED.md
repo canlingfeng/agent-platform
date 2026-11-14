@@ -199,6 +199,19 @@ if checkpointer is None:
 清单：`schema.sql.orig`、`api/schemas.py.bak`、`static/index.html.bak`、
 `static/css/style.css.bak`、`static/js/app.js.bak`、`static/js/app.js.bak2`。
 
+### 2026-11-09 补充整理
+
+项目根原散落 `_diag_uvicorn.py`（临时诊断启动器）、`tests/test_echo_server.py`
+（无测试函数的 MCP 验收桩，会被 pytest 收集为 0 用例）与
+`.env.bak.20261021-210051`（含密钥的环境变量快照），现统一移入 `_deprecated/`。
+前两者不参与构建；第三者因 `.dockerignore` 的 `.env` / `*.bak` 规则都不匹配
+日期数字后缀，原本会被 `COPY . .` 打进镜像，移入归档目录后由整目录排除覆盖，
+并补 `.env.*` 规则作纵深防御。
+
+归档脚本的文件头已改为用 `__file__` 上跳一级把项目根加入 `sys.path`，
+替换掉 `debug_llm.py` 里写死的 `D:\shiyanshixiangmu\...` 绝对路径：
+归档后从 `_deprecated/` 直接运行也能解析 `core` / `storage` 包，且平台无关。
+
 ---
 
 ## 六、连带影响（2026-10-21 整理 `_deprecated/` 时产生）

@@ -17,4 +17,5 @@ rag_data/
 *.key
 .venv/
 venv/
-_diag_uvicorn.py
+# 临时诊断启动器：已归档至 _deprecated/，仍不纳入版本库
+_deprecated/diag_uvicorn.py

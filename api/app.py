@@ -8,6 +8,7 @@
   - 与 Gradio webui.py 并存：两者各自 import 一套 agent，互不影响；后续前端可整体切到这套 API。
 """
 import os
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -25,6 +26,12 @@ async def lifespan(app: FastAPI):
     app.state.checkpointer = cp
     app.state.agent = Agent(checkpointer=cp)
     yield
+    # 关闭期：先回收 MCP 常驻线程与 stdio 子进程，再释放 MySQL 连接
+    try:
+        from core.mcp_client import shutdown_runtime
+        shutdown_runtime()
+    except Exception as e:
+        logging.getLogger(__name__).warning("MCP 关闭失败：%s: %s", type(e).__name__, e)
     # 关闭期：释放 MySQL 连接
     try:
         cp.conn.close()

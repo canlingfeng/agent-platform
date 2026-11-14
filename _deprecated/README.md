@@ -6,8 +6,12 @@
 > 每个条目都写明：**为什么不用了 / 被什么取代 / 怎么恢复**。
 > 恢复方法：把文件移回项目根目录即可（注意恢复 `webui.py` 需先 `pip install gradio`，
 > 且 `requirements.txt` 里的 gradio 依赖已随之删除）。
+>
+> 本目录内的 Python 脚本已在文件头用 `__file__` 上跳一级把项目根加入
+> `sys.path`（模块搜索路径），因此**直接在本目录运行也能解析 `core` /
+> `storage` 包**，无需先移回根目录；路径不写死盘符，Windows / Linux 通用。
 
-整理日期：2026-10-21
+整理日期：2026-10-21 · 补充整理：2026-11-09
 
 ---
 
@@ -23,7 +27,15 @@ CLI 交互模式。主入口为 run.py。保留价值低：本地调试现在有
 
 ### `debug_llm.py`
 
-LLM 连通性调试脚本。不经过 LangGraph 和数据库，用于判断'是 LLM 配置问题还是 Agent/DB 问题'。已由 docker compose logs + /health 探针大部分替代；如确需直接打 LLM，可从本目录恢复到项目根运行。
+LLM 连通性调试脚本。不经过 LangGraph 和数据库，用于判断"是 LLM 配置问题还是 Agent/DB 问题"。已由 docker compose logs + /health 探针大部分替代；如确需直接打 LLM，可从本目录恢复到项目根运行。
+
+### `diag_uvicorn.py`（2026-11-09 由项目根移入）
+
+临时复现启动器，与 `run.py` 等价但用 8002 端口避免冲突。属一次性排障脚本，不纳入版本库（`.gitignore` 已列出）。文件头已改为用 `__file__` 推导项目根并加载根目录 `.env`，原写死的 Windows 绝对路径已移除。
+
+### `test_echo_server.py`（2026-11-09 由 `tests/` 移入）
+
+MCP server 的早期验收桩：文件内直接构造 `MCPServer` 并以 stdio 运行，**没有任何测试函数或断言**，放在 `tests/` 下会被 pytest（测试框架）当作测试模块收集却产出 0 个用例。正式版本为 `mcp_servers/echo_server.py`（含 stdout 保护与平台无关说明）。此桩仅作历史留存。
 
 ---
 
@@ -40,6 +52,14 @@ LLM 连通性调试脚本。不经过 LangGraph 和数据库，用于判断'是 
 | `style.css.bak` | 2088 B | UI 改版前的样式表 |
 | `app.js.bak` | 4648 B | 前端重构（竞态修复前）的 app.js |
 | `app.js.bak2` | 4877 B | 前端重构（UI 对齐 WorkBuddy）时的更早备份 |
+| `.env.bak.20261021-210051` | 419 B | 环境变量快照，**含密钥**；2026-11-09 由项目根移入（详见下方安全说明） |
+
+### 安全说明：为何把 `.env.bak.*` 移入本目录
+
+`.dockerignore` 原本只排除 `.env` 与 `*.bak`，而 `.env.bak.20261021-210051`
+以日期数字结尾，两项规则都不匹配，`Dockerfile` 的 `COPY . .` 会把它打进镜像，
+造成密钥随镜像分发。现已移入 `_deprecated/backups/`（整目录被 `.dockerignore`
+排除），并在 `.dockerignore` 补 `.env.*` + `!.env.example` 作为纵深防御。
 
 ---
 

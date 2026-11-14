@@ -25,6 +25,10 @@ dbutils==3.2.0
 # ---- 向量库（Milvus Lite，本地文件模式，无需独立服务进程；3.x 返回 List[List[dict]]）----
 pymilvus==3.0.2
 
+# ---- MCP 客户端（Model Context Protocol，模型上下文协议；stdio transport 标准输入输出传输）----
+# 缺此依赖时 build_mcp_tools() 会 fail-open 返回空列表：服务正常启动但 MCP 工具静默不可用。
+mcp==2.3.0
+
 # ---- 密码哈希（自适应慢哈希，自带 salt）----
 bcrypt==3.2.0
 

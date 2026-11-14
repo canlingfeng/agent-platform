@@ -43,6 +43,15 @@ services:
       # 密钥只能走环境变量；未设置时 compose 会替换成空串，RAG 功能随即不可用。
       SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY}
       AGENT_JWT_SECRET: ${AGENT_JWT_SECRET}
+      # MCP（可选）：JSON 字符串用单引号包住 ${...}，避免值以 [ 开头时被 YAML 解析成数组。
+      # 默认值用 [] 而非空串：空串会让 json.loads("") 抛 JSONDecodeError，
+      # [] 则让 _load_servers() / _mcp_allow() 走正常路径（无 server / 全拒）。
+      AGENT_MCP_SERVERS: '${AGENT_MCP_SERVERS:-[]}'
+      AGENT_MCP_ALLOW: '${AGENT_MCP_ALLOW:-[]}'
+      # 连接批次硬上限（秒）：与 _connect_timeout() 的默认值 5.0 保持一致。
+      # 用 :- 而非 -：宿主未设置或设为空串时都回退 5.0，避免空串流入 float() 抛 ValueError。
+      # 单引号保证它是 YAML 字符串标量；值最终以字符串形式进入容器进程环境块。
+      AGENT_MCP_CONNECT_TIMEOUT: '${AGENT_MCP_CONNECT_TIMEOUT:-5.0}'
     ports:
       - "8000:8000"
     # 前端热更新：把本地 static/ 只读挂进容器。改完前端浏览器强刷即可生效，

@@ -73,6 +73,11 @@
         <div class="chat-body">
           <div id="messages"></div>
           <div id="empty-hint" class="empty-hint">有什么可以帮你的？</div>
+          <!-- 回滚到最新消息：仅在用户向上翻历史、且消息区有可滚动内容时出现 -->
+          <button id="btn-jump-latest" class="jump-latest" type="button" hidden
+                  title="回到最新消息" aria-label="回到最新消息">
+            <span class="jump-arrow" aria-hidden="true">↓</span> 最新消息
+          </button>
         </div>
 
         <!-- 输入区：圆角卡片，Enter 发送 / Shift+Enter 换行 -->

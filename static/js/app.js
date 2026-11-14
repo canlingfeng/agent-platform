@@ -18,6 +18,36 @@ let reqSeq = 0;
 // 小工具：$ 是 document.getElementById 的缩写，按 id 取页面元素
 const $ = (id) => document.getElementById(id);
 
+// ==================== 回到最新消息 ====================
+// 贴底容差：距底部 <=48px 就视为在底部，规避小数像素误差导致的按钮闪烁。
+const BOTTOM_EPSILON = 48;
+// 是否跟随最新消息：用户停在底部为 true，主动向上翻历史时置 false。
+// 用状态变量而不是每次现算，是因为流式追加会改变 scrollHeight；
+// 追加之后再判定会把「用户已翻上去」的状态误判成「离底部很远」。
+let stickToBottom = true;
+
+function isAtBottom() {
+  const box = $("messages");
+  return box.scrollHeight - box.scrollTop - box.clientHeight <= BOTTOM_EPSILON;
+}
+
+// 显隐规则：内容能滚动 + 用户不在底部 → 显示；在底部或内容不足一屏 → 隐藏。
+function updateJumpButton() {
+  const box = $("messages");
+  const btn = $("btn-jump-latest");
+  if (!box || !btn) return;
+  const scrollable = box.scrollHeight - box.clientHeight > BOTTOM_EPSILON;
+  btn.hidden = !scrollable || isAtBottom();
+}
+
+function scrollToLatest() {
+  const box = $("messages");
+  // 瞬时跳转：平滑滚动期间会连续触发 scroll 事件，按钮会先显后隐地闪烁。
+  box.scrollTop = box.scrollHeight;
+  stickToBottom = true;
+  updateJumpButton();
+}
+
 // ==================== 时间处理 ====================
 
 // 解析后端时间字符串 → 毫秒时间戳。
@@ -162,7 +192,9 @@ async function deleteSessionUI(id) {
     $("messages").innerHTML = "";
     $("chat-title").textContent = "新会话";
     $("chat-meta").textContent = "";
+    stickToBottom = true;
     toggleEmpty();
+    updateJumpButton();
   }
   renderSessions();
 }
@@ -176,7 +208,10 @@ async function selectSession(id) {
   state.messages = [];
   renderSessions();
   $("messages").innerHTML = "";
+  // 切换会话一律回到最新消息：不继承上一个会话「正在翻历史」的滚动状态。
+  stickToBottom = true;
   toggleEmpty();
+  updateJumpButton();
   refreshSessionStatus(id, my);          // 传入序号，两个请求共用一个守卫
   try {
     const msgs = await api.getMessages(id);
@@ -185,6 +220,7 @@ async function selectSession(id) {
     for (const m of msgs) {
       addMessage(m.role, m.content);
     }
+    scrollToLatest();                    // 历史加载完定位到最新一条
   } catch (e) {
     console.error("加载历史失败", e);
   }
@@ -293,6 +329,8 @@ async function send() {
   renderAttachPreview();                 // 清空缩略图
   // 只有图没有字时 message 仍需非空：后端 ChatRequest.message 有 min_length=1
   const message = text || "(图片)";
+  // 主动发消息属于明确意图：无论此前是否在翻历史，都跳到最新并恢复跟随。
+  scrollToLatest();
   addMessage("user", message);
   const aiId = addMessage("ai", "");
   try {
@@ -302,7 +340,9 @@ async function send() {
       //         ② 流式期间用户可能已切换到别的会话
       if (!el || state.currentId !== sid) return;
       el.textContent += chunk;           // 每来一个片段就追加，实现"逐字显示"
-      $("messages").scrollTop = $("messages").scrollHeight;  // 自动滚到底
+      // 用户向上翻历史时不抢滚动条：只有原本贴底才跟随新内容。
+      if (stickToBottom) $("messages").scrollTop = $("messages").scrollHeight;
+      updateJumpButton();
     }, images, state.controller.signal, (cmd) => {
       // ASK 三态：收到待确认命令 → 弹确认框（cmd 为待执行的系统命令）
       showConfirmModal(cmd, sid);
@@ -375,6 +415,7 @@ async function onAskConfirm(decision) {
   const { cmd, sid } = confirmState;
   closeConfirmModal();
   // 先放一条占位 AI 气泡，执行完再填结果（命令执行可能耗时，给即时反馈）
+  scrollToLatest();                    // 确认动作是主动意图，回到最新消息
   const aiId = addMessage("ai", "⏳ 正在执行命令…");
   try {
     const data = await api.confirmCommand(sid, cmd, decision);
@@ -382,7 +423,8 @@ async function onAskConfirm(decision) {
   } catch (e) {
     $(aiId).textContent = "[错误] " + e.message;
   }
-  $("messages").scrollTop = $("messages").scrollHeight;
+  if (stickToBottom) $("messages").scrollTop = $("messages").scrollHeight;
+  updateJumpButton();
 }
 
 // textarea 自动增高：先复位再按内容高度撑开，封顶 160px 后内部滚动
@@ -404,6 +446,9 @@ function addMessage(role, content) {
   div.textContent = content;
   $("messages").appendChild(div);
   toggleEmpty();
+  // 只有用户原本停在底部才自动跟随；向上翻历史时保持当前位置，不改滚动条。
+  if (stickToBottom) $("messages").scrollTop = $("messages").scrollHeight;
+  updateJumpButton();
   return id;
 }
 
@@ -708,6 +753,16 @@ window.addEventListener("DOMContentLoaded", () => {
   $("btn-custom-ok").onclick = applyCustomModel; // 自定义模型表单的"使用"按钮
   $("btn-confirm-allow").onclick = () => onAskConfirm("allow"); // ASK 弹框：允许执行
   $("btn-confirm-deny").onclick = () => onAskConfirm("deny");   // ASK 弹框：拒绝
+
+  // 消息区滚动：用户手动上翻时停止自动跟随，并按位置显隐「最新消息」按钮。
+  // passive:true 只声明不调用 preventDefault，浏览器可优化滚动性能。
+  $("messages").addEventListener("scroll", () => {
+    stickToBottom = isAtBottom();
+    updateJumpButton();
+  }, { passive: true });
+  $("btn-jump-latest").onclick = scrollToLatest;
+  // 窗口尺寸变化会改变 clientHeight，重新判定按钮显隐，避免窄屏下残留或漏显。
+  window.addEventListener("resize", updateJumpButton);
 
   // 点页面其他位置关闭浮层
   document.addEventListener("click", (e) => {

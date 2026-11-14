@@ -130,6 +130,28 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; background:
   color: #9aa0a6; font-size: 14px;
 }
 
+/* ---------- 回到最新消息 ----------
+   用户向上翻历史时出现的悬浮胶囊。chat-body 已是 position:relative，
+   所以按钮相对消息区右下角定位，不随消息内容滚动。
+   浅色卡片 + 深色文字，与 composer / 弹窗保持同一套视觉语言。 */
+.jump-latest {
+  position: absolute; right: 24px; bottom: 16px; z-index: 10;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid #dfe1e5; border-radius: 18px;
+  background: #fff; color: #3c4043;
+  font-size: 12.5px; line-height: 1.2; cursor: pointer;
+  box-shadow: 0 2px 8px rgba(32, 33, 36, .14);
+  transition: background .15s ease, box-shadow .15s ease;
+}
+.jump-latest:hover { background: #f1f3f4; box-shadow: 0 3px 10px rgba(32, 33, 36, .2); }
+.jump-latest:active { background: #e8eaed; }
+.jump-latest:focus-visible { outline: 2px solid #1a73e8; outline-offset: 2px; }
+.jump-arrow { font-size: 14px; font-weight: 600; }
+/* 与 .confirm-modal 同理：display:inline-flex 会盖掉 hidden 的 display:none，
+   必须用属性选择器把优先级抬回去，否则按钮会一直常驻。 */
+.jump-latest[hidden] { display: none; }
+
 /* 消息气泡 */
 .msg {
   max-width: 68%; padding: 10px 13px; border-radius: 12px;
@@ -295,6 +317,8 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; background:
   .msg { max-width: 85%; }
   #messages { padding: 14px; }
   .composer { margin: 0 12px 12px; }
+  /* 窄屏把胶囊贴近右边缘，避免与消息气泡重叠过多 */
+  .jump-latest { right: 14px; bottom: 12px; }
 }
 
 /* ---------- ASK 三态确认框 ---------- */
