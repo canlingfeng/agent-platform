@@ -1,5 +1,6 @@
 import os
 from contextlib import contextmanager
+import threading
 import pymysql
 from pymysql.cursors import DictCursor
 from dbutils.pooled_db import PooledDB
@@ -19,20 +20,35 @@ DB_CONFIG = {
 # - maxconnections=10：并发上限；blocking=True 表示超量时排队而非报错（生产更稳）；
 # - ping=1：借出前 ping 一下，自动剔除已被 MySQL 空闲超时断开的连接；
 # - 借出的连接调 close() 是"归还池"（PooledDB 包装），并非真关闭。
-_pool = PooledDB(
-    creator=pymysql,
-    mincached=2,
-    maxcached=5,
-    maxconnections=10,
-    blocking=True,
-    ping=1,
-    cursorclass=DictCursor,
-    **DB_CONFIG,
-)
+#
+# 惰性建池（C-1）：旧写法在 import 期就 PooledDB(mincached=2) 建连，带来两个问题：
+#   1. CI / 离线跑 pytest 时没有 MySQL → import storage.db 直接崩，所有相关测试全挂；
+#   2. 容器启动期 MySQL 还没就绪 → FastAPI app 导入即失败，重启风暴。
+# 改为：import 期只锁好配置，首次 get_conn() 才真正建池（双检锁保证只建一次）。
+_lock = threading.Lock()
+_pool = None
+
+
+def _get_pool():
+    global _pool
+    if _pool is None:
+        with _lock:
+            if _pool is None:
+                _pool = PooledDB(
+                    creator=pymysql,
+                    mincached=2,
+                    maxcached=5,
+                    maxconnections=10,
+                    blocking=True,
+                    ping=1,
+                    cursorclass=DictCursor,
+                    **DB_CONFIG,
+                )
+    return _pool
 
 
 def get_conn():
-    return _pool.connection()
+    return _get_pool().connection()
 
 def query(sql:str,params:tuple |list|None=None)->list[dict]:
     with get_conn() as conn:
