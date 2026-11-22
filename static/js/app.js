@@ -357,6 +357,9 @@ async function send() {
     }, (u) => {
       // 用量帧：刷新顶栏「本次 / 今日」，被单次上限截断时在气泡末尾补一行提示
       applyUsage(u, sid, aiId);
+    }, (name) => {
+      // 工具占位帧：在 AI 气泡上方插一行「⚙ 工具名」，Agent 干活过程可见
+      showToolActivity(name, sid, aiId);
     });
   } catch (e) {
     // 防御性错误处理：节点可能已不存在，不能假设出错时现场还完好
@@ -745,6 +748,21 @@ function applyUsage(u, sid, aiId) {
     const el = $(aiId);
     if (el) el.textContent += "\n\n（已达单次 token 上限，生成已停止）";
   }
+}
+
+// 工具执行轻量占位：流式期间每执行一个工具，在 AI 气泡上方插一行「⚙ 工具名」。
+// 为什么 insertBefore 而不是 appendChild：AI 气泡已经先在 DOM 里并正在流式追加内容，
+// 直接 append 会把工具行排到回复后面，与真实执行时序相反。
+// 同一轮流执行多个工具 → 多行，按时间顺序天然排列。占位行不持久：刷新/重进会话
+// 后消失（历史里的 tool 结果仍有完整的 .msg.tool 降噪气泡），定位是"过程感知"。
+function showToolActivity(name, sid, aiId) {
+  const anchor = $(aiId);
+  if (!anchor || state.currentId !== sid) return;  // 与 chunk 回调同一套竞态守卫
+  const div = document.createElement("div");
+  div.className = "tool-activity";
+  div.textContent = "⚙ " + name;
+  $("messages").insertBefore(div, anchor);
+  if (stickToBottom) $("messages").scrollTop = $("messages").scrollHeight;
 }
 
 // 拉会话状态：消息条数 + 上下文压缩情况，渲染在顶栏标题旁

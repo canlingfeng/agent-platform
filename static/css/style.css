@@ -127,6 +127,12 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; background:
   font-size: 11.5px; white-space: nowrap;
 }
 .chat-meta .usage.warn { background: #fdecea; color: #a4281e; }
+/* 工具执行占位行：流式过程中「⚙ 工具名」，比 .msg.tool 更轻（无边框无底色） */
+.tool-activity {
+  font-size: 12px; color: #7b8794; margin-bottom: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap; word-break: break-word;
+}
 
 /* 消息区 + 空状态提示 */
 .chat-body { flex: 1; position: relative; min-height: 0; display: flex; }

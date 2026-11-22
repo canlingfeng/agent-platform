@@ -151,7 +151,9 @@ export async function chatSync(sessionId, message) {
 //   不入参也要给默认值 null —— 老调用方不需要 ASK 时传不传都不影响。
 // onUsage 是回调：收到用量帧（payload.usage）时调用，参数含本次 token、今日累计与上限。
 //   同样给默认值 null，保持向后兼容（旧调用方不传也能正常跑）。
-export async function streamChat(sessionId, message, onChunk, images = [], signal = null, onAsk = null, onUsage = null) {
+// onTool 是回调：收到工具占位帧（payload.tool）时调用，参数为工具名。
+//   协议兼容性：老后端不发这个帧，分支永远不会命中；老前端不认识就忽略——天然兼容。
+export async function streamChat(sessionId, message, onChunk, images = [], signal = null, onAsk = null, onUsage = null, onTool = null) {
   const res = await fetch("/api/v1/chat/stream", {
     method: "POST",
     headers: authHeaders(),
@@ -192,11 +194,15 @@ export async function streamChat(sessionId, message, onChunk, images = [], signa
         if (onUsage) onUsage(payload.usage);
         continue;                                     //    用量帧不含正文，继续读下一帧
       }
-      if (payload.ask !== undefined) {                // ⑫ ASK 挂起信号：把待确认命令交给上层弹框
+      if (payload.tool !== undefined) {               // ⑫ 工具占位帧：轻量显示"执行了什么"
+        if (onTool) onTool(payload.tool);
+        continue;                                     //    不含正文，继续读下一帧
+      }
+      if (payload.ask !== undefined) {                // ⑬ ASK 挂起信号：把待确认命令交给上层弹框
         if (onAsk) onAsk(payload.ask);
         return;                                       //    确认框接管后续，本轮流结束
       }
-      if (typeof payload.t === "string") onChunk(payload.t);  // ⑬ 增量片段交给上层渲染
+      if (typeof payload.t === "string") onChunk(payload.t);  // ⑭ 增量片段交给上层渲染
     }
   }
 }

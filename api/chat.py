@@ -321,6 +321,14 @@ async def chat_stream(req: ChatRequest, request: Request,
                             # webui 模式下返回 "NEED_CONFIRM:<cmd>"（type=="tool"）。这里
                             # 把它识别成挂起信号，推给前端弹确认框，并 return 暂停 producer，
                             # 等用户确认后再由 /chat/confirm 单独执行。
+                            if mtype == "tool":
+                                # 方案 B：工具执行轻量占位帧。只推工具名（ToolMessage.name），
+                                # 输出全文不进聊天流（保持"聊天为主、轨迹降噪"的定位）。
+                                # 放在 NEED_CONFIRM 判断之前：即使紧接着挂起确认，
+                                # 前端也先看到"执行了 execute_command"再弹框，时序自然。
+                                tool_name = getattr(m, "name", None) or "tool"
+                                asyncio.run_coroutine_threadsafe(
+                                    queue.put({"tool": tool_name}), loop)
                             if (mtype == "tool" and isinstance(content, str)
                                     and content.startswith("NEED_CONFIRM:")):
                                 cmd = content[len("NEED_CONFIRM:"):]
@@ -362,6 +370,10 @@ async def chat_stream(req: ChatRequest, request: Request,
                 try:
                     # dict 帧 = ASK 挂起信号：把命令透传给前端确认框，然后结束本轮流。
                     # 注意 break 后不再发 done —— 否则前端会先弹框又被 done 收尾逻辑干扰。
+                    if isinstance(item, dict) and "tool" in item:
+                        # 工具占位帧：透传工具名，继续读下一帧（不打断本轮流）
+                        yield "data: " + json.dumps({"tool": item["tool"]}, ensure_ascii=False) + "\n\n"
+                        continue
                     if isinstance(item, dict) and "ask" in item:
                         # 先推用量帧再推 ask：前端收到 ask 会立刻 return（弹框接管），
                         # 之后发的帧就没人消费了，挂起前这段消耗必须抢先送出去。
