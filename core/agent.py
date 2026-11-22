@@ -2,6 +2,7 @@ import os
 os.environ["LANGGRAPH_STRICT_MSGPACK"] = "true"
 import requests
 import httpx
+import logging
 from core.tools import TOOLS, langchain_tools
 from core.mcp_tools import build_mcp_tools
 from langchain_openai import ChatOpenAI
@@ -106,12 +107,27 @@ class Agent:
         except requests.exceptions.RequestException as e:
             return f'{{"action": "answer", "content": "网络错误：{type(e).__name__}"}}'
         if response.status_code != 200:
-            print(f"API错误码: {response.status_code}")
-            print(f"错误详情: {response.text}")
+            logging.getLogger(__name__).warning(
+                "LLM HTTP %s：%s", response.status_code, (response.text or "")[:200])
             return '{"action": "answer", "content": "API调用失败"}'
-        content = response.json()["choices"][0]["message"]["content"]
-        
-        print(f"【LLM原始返回】：{content}")
+        # P2-9：响应结构防御。ModelScope 偶发返回空 body / 非 JSON / 缺字段，
+        # 旧写法链式取值会让 JSONDecodeError / KeyError / IndexError 裸抛到
+        # run() 收尾段，把「主回答已正常生成」的请求打成 500。
+        # 这里统一折成错误哨兵（与上方超时/网络错误返回同构）：
+        # _compress 的 startswith('{"action"') 分支会自动走原文回退。
+        try:
+            payload = response.json()
+            content = payload["choices"][0]["message"]["content"]
+        except (ValueError, KeyError, IndexError, TypeError) as e:
+            logging.getLogger(__name__).warning(
+                "LLM 响应结构异常：%s: %s；body 前 200 字符：%r",
+                type(e).__name__, e, (response.text or "")[:200])
+            return '{"action": "answer", "content": "模型返回了非标准响应，本次摘要已跳过，请稍后重试。"}'
+        if content is None:
+            # 部分供应商在 tool_calls 分支会返回 content=null，对摘要场景等同失败
+            logging.getLogger(__name__).warning("LLM 返回 content=null，按非标准响应处理")
+            return '{"action": "answer", "content": "模型返回内容为空，本次摘要已跳过。"}'
+        logging.getLogger(__name__).debug("【LLM原始返回】%s", content)
         return content
 
     def _compress(self,session,evicted:list):
@@ -179,6 +195,13 @@ class Agent:
 
     def run(self,user_input:str,session)->str:  
         config={"configurable":{"thread_id":session.id}}
+        # 记账口径（P1-5 修复）：invoke 前先量一次历史长度，只统计本轮新增的消息。
+        # 实测确认：MySQL checkpointer 反序列化后，历史 AIMessage 的 usage_metadata 依然存在，
+        # 若对整条 result["messages"] 求和，会把过去每一轮的 token 反复计入（累计二次方增长）。
+        # 前提：state["messages"] 只增不减 —— agent_graph 未使用 RemoveMessage，
+        # 上下文压缩只写 session.summary，不删 state 里的消息，故切片起点稳定。
+        prev = self.graph.get_state(config)
+        n_before = len(prev.values.get("messages", [])) if prev and prev.values else 0
         result= self.graph.invoke({
             "messages": [HumanMessage(content=user_input)],
             "iteration": 0,
@@ -197,7 +220,7 @@ class Agent:
             return last.content
         content = last.content if isinstance(last, AIMessage) else "抱歉，我遇到了问题。"
         total_tokens = 0
-        for m in result["messages"]:
+        for m in result["messages"][n_before:]:
             usage = getattr(m, "usage_metadata", None)
             if usage:
                 total_tokens += int(

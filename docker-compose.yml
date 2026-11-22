@@ -52,6 +52,9 @@ services:
       # 用 :- 而非 -：宿主未设置或设为空串时都回退 5.0，避免空串流入 float() 抛 ValueError。
       # 单引号保证它是 YAML 字符串标量；值最终以字符串形式进入容器进程环境块。
       AGENT_MCP_CONNECT_TIMEOUT: '${AGENT_MCP_CONNECT_TIMEOUT:-5.0}'
+      # 单次请求 token 上限：与 api/chat.py 的 _DEFAULT_MAX_TOKENS_PER_REQUEST(20000) 一致。
+      # 实际生效值 = min(该值, 今日剩余额度)；容器里没有 config.json，只能靠环境变量注入。
+      AGENT_MAX_TOKENS_PER_REQUEST: '${AGENT_MAX_TOKENS_PER_REQUEST:-20000}'
     ports:
       - "8000:8000"
     # 前端热更新：把本地 static/ 只读挂进容器。改完前端浏览器强刷即可生效，

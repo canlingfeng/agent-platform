@@ -72,3 +72,20 @@ def get_current_user(
             detail="账号已被禁用",
         )
     return user
+
+def require_admin(user: Annotated[dict, Depends(get_current_user)]) -> dict:
+    """管理员闸门：只放行 role='admin' 的用户。
+
+    依赖链 require_admin -> get_current_user：后者每次请求都反查 users 表，
+    返回的 user 是数据库当前行（含 role/status），不是 JWT 载荷里的快照。
+    管理员被降级或禁用后，旧 token 在过期前仍可解析，但这里读到的是新 role，
+    因此降级即时生效，不存在 token 有效期内保留管理员权限的窗口。
+
+    fail-closed（失败即拒绝）：role 缺失、为 None、大小写不符一律拒绝。
+    """
+    if user.get("role")!="admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="需要管理员权限",
+        )
+    return user

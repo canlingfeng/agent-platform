@@ -156,6 +156,44 @@ def consume_quota(user_id: int, requests: int = 1, tokens: int = 0) -> bool:
             return True
     except _OverQuota:
         return False
+def get_usage_today(user_id: int) -> dict:
+    """查询本用户「今日」用量与配额上限（单请求限额 + 前端展示共用同一入口）。
+
+    设计要点：
+      - quotas 当左表、usage_daily 当右表：今日可能一次请求都还没有（无用量行），
+        左连接保证即使没有用量记录也能拿到配额上限，而不是返回空列表。
+      - COALESCE 把 NULL 折成 0，调用方拿到的一定是整数，不需要再判空。
+      - UTC 日期与 consume_quota / record_usage 完全一致，避免跨时区导致
+        「今天的额度被算到明天」。
+      - 返回结构恒定：该用户没有配额行（数据异常）时返回全 0，
+        让上层 fail-closed（剩余 0 直接拒绝），而不是抛异常把 500 暴露给前端。
+    """
+    today=datetime.now(timezone.utc).date()
+    rows=query(
+    "SELECT q.daily_token_limit AS limit_tokens, "
+    "       q.daily_request_limit AS limit_requests, "
+    "       COALESCE(u.used_tokens, 0) AS used_tokens, "
+    "       COALESCE(u.used_requests, 0) AS used_requests "
+    "FROM quotas q "
+    "LEFT JOIN usage_daily u "
+    "       ON u.user_id = q.user_id AND u.usage_date = %s "
+    "WHERE q.user_id = %s",
+    (today, user_id),
+    )
+    if not rows:
+        return {"used_tokens": 0, "used_requests": 0,
+                "limit_tokens": 0, "limit_requests": 0, "remaining_tokens": 0}
+    r=rows[0]
+    used_tokens=int(r["used_tokens"])
+    limit_tokens = int(r["limit_tokens"])
+    return {
+        "used_tokens": used_tokens,
+        "used_requests": int(r["used_requests"]),
+        "limit_tokens": limit_tokens,
+        "limit_requests": int(r["limit_requests"]),
+        # 无符号下界：用量若因历史脏数据超过上限，也不能把负数传给前端
+        "remaining_tokens": max(limit_tokens - used_tokens, 0),
+    }
 def create_session(user_id: int, title: str = "") -> str:
     session_id = str(uuid.uuid4())
     execute("INSERT INTO sessions (id, user_id, title) VALUES (%s, %s, %s)",

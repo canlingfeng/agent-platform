@@ -120,5 +120,12 @@ def resolve(provider: str, base_url: str = "", model: str = "") -> dict:
     return {"base_url": preset["base_url"], "model": preset["model"]}
 
 def model_supports_images(provider: str) -> bool:
-    """当前模型是否支持图片输入。缺字段默认 False，绝不抛 KeyError。"""
+    """当前模型是否支持图片输入。
+
+    - 预设厂商：以 PRESETS 声明的 supports_images 为准（缺字段默认 False，绝不抛 KeyError）。
+    - custom：用户自填的 OpenAI 兼容端点，模型能力由使用者自己声明。这里放行而非拦死：
+      误放行的最坏结果是请求报错并得到明确提示；误拦截则多模态对 custom 用户完全不可用。
+    """
+    if provider == "custom":
+        return True
     return bool(PRESETS.get(provider, {}).get("supports_images", False))

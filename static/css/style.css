@@ -120,6 +120,13 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; background:
   display: inline-block; padding: 1px 7px; margin-left: 6px;
   background: #fef7e0; color: #b06000; border-radius: 8px; font-size: 11.5px;
 }
+/* 用量徽标：顶栏显示「本次 N tokens · 今日 X / Y」，普通态蓝灰、超限态转红 */
+.chat-meta .usage {
+  display: inline-block; padding: 1px 7px; margin-left: 8px;
+  background: #eef3fb; color: #35507a; border-radius: 8px;
+  font-size: 11.5px; white-space: nowrap;
+}
+.chat-meta .usage.warn { background: #fdecea; color: #a4281e; }
 
 /* 消息区 + 空状态提示 */
 .chat-body { flex: 1; position: relative; min-height: 0; display: flex; }

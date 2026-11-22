@@ -15,7 +15,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from api.deps import get_current_user
+from api.deps import get_current_user, require_admin
 from api.schemas import ConfigResponse
 from core import permission
 from core.agent import CONFIG_PATH
@@ -100,7 +100,7 @@ def list_providers(user=Depends(get_current_user)):
 
 @router.post("/config", response_model=ConfigResponse)
 def switch_model(req: ModelSwitchRequest, request: Request,
-                 user=Depends(get_current_user)):
+                 admin=Depends(require_admin)):
     """热切换供应商/模型：白名单校验 → configure 重建 LLM → 持久化 → 返回新配置。"""
     if req.provider not in PRESETS:
         raise HTTPException(

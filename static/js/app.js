@@ -11,6 +11,7 @@ const state = {
   streaming: false, // 流式进行中标志：true 时禁止再发起 send()
   queue: [],        // 流式期间用户继续发的消息，先进这里排队（FIFO），流结束自动发
   controller: null, // 当前流式的 AbortController，用于"停止"按钮中断 fetch
+  usage: null,      // 用量快照 {turn_tokens,used_tokens,limit_tokens,...,capped}，顶栏展示用
 };
 
 // 请求序号：每次"选中会话"自增 1，用于丢弃过期的异步响应（防乱序渲染）
@@ -105,6 +106,7 @@ async function boot() {
     // refreshSessions 抛 401（token 失效）时不能中断启动，否则 loadConfig 不执行、界面半残
     try { await refreshSessions(); } catch (e) { console.error("拉会话列表失败", e); }
     loadConfig();          // 拉运行配置（模型/权限），失败不阻塞主流程
+    refreshUsage();        // 拉当日 token 用量，渲染到顶栏（失败只打日志）
   } else {
     showAuth();
   }
@@ -124,6 +126,7 @@ async function doAuth(mode) {
     showApp();
     await refreshSessions();
     loadConfig();          // 登录/注册成功后也拉一次运行配置，否则胶囊停在"配置不可用"
+    refreshUsage();        // 新登录用户也要看到自己的当日用量
   } catch (e) {
     $("auth-msg").textContent = e.message;
   }
@@ -203,6 +206,11 @@ async function deleteSessionUI(id) {
 async function selectSession(id) {
   const my = ++reqSeq;                   // 抢占本次序号（单调递增）
   state.currentId = id;
+  // 流式中切换会话：abort 旧流（后端 A① 会在 1s 内止血停止生成），
+  // 并清空排队消息——它们是针对旧会话的输入，带到新会话发出去就是错账。
+  // 旧流的 AbortError 会被 send() 的 catch 吞掉，不会弹错误提示。
+  if (state.streaming && state.controller) { state.controller.abort(); state.queue = []; }
+    state.currentId = id;
   const cur = state.sessions.find((s) => s.id === id);
   $("chat-title").textContent = cur ? (cur.title || "新会话") : "新会话";
   state.messages = [];
@@ -346,6 +354,9 @@ async function send() {
     }, images, state.controller.signal, (cmd) => {
       // ASK 三态：收到待确认命令 → 弹确认框（cmd 为待执行的系统命令）
       showConfirmModal(cmd, sid);
+    }, (u) => {
+      // 用量帧：刷新顶栏「本次 / 今日」，被单次上限截断时在气泡末尾补一行提示
+      applyUsage(u, sid, aiId);
     });
   } catch (e) {
     // 防御性错误处理：节点可能已不存在，不能假设出错时现场还完好
@@ -688,6 +699,54 @@ async function uploadKbFile(ev) {
   }
 }
 
+// ==================== token 用量 ====================
+// 顶栏展示「本次 N tokens · 今日 X / Y」，数据来源两处：
+//   ① 流式期间后端推来的 usage 帧（最准，含本次消耗）
+//   ② 页面加载 / 登录后 GET /api/v1/usage（只有当日累计，本次按 0 显示）
+// 数字统一走 toLocaleString 千分位，避免长串数字难读。
+
+function formatNum(n) {
+  return Number(n || 0).toLocaleString("zh-CN");
+}
+
+// 渲染用量徽标。注意 refreshSessionStatus 会重写 meta.textContent，
+// 所以这里每次先删掉旧的 .usage 节点再追加，保证幂等（不会越叠越多）。
+function renderUsage() {
+  const meta = $("chat-meta");
+  if (!meta) return;
+  const old = meta.querySelector(".usage");
+  if (old) old.remove();
+  const u = state.usage;
+  if (!u) return;
+  const span = document.createElement("span");
+  span.className = "usage" + (u.capped ? " warn" : "");
+  span.textContent =
+    `本次 ${formatNum(u.turn_tokens)} tokens · 今日 ${formatNum(u.used_tokens)} / ${formatNum(u.limit_tokens)}`;
+  if (u.capped) span.title = "本次请求已达单次 token 上限，生成被提前中止";
+  meta.appendChild(span);
+}
+
+// 拉一次当日用量（登录成功、页面刷新各调一次；失败不影响主流程）
+async function refreshUsage() {
+  try {
+    state.usage = await api.getUsage();
+    renderUsage();
+  } catch (e) {
+    console.error("拉取用量失败", e);
+  }
+}
+
+// 处理流式推来的 usage 帧：更新状态 → 重渲染 → 若被截断在气泡末尾补提示
+function applyUsage(u, sid, aiId) {
+  if (sid !== undefined && state.currentId !== sid) return;  // 已切走会话，不污染当前界面
+  state.usage = u;
+  renderUsage();
+  if (u.capped) {
+    const el = $(aiId);
+    if (el) el.textContent += "\n\n（已达单次 token 上限，生成已停止）";
+  }
+}
+
 // 拉会话状态：消息条数 + 上下文压缩情况，渲染在顶栏标题旁
 // my 是调用方（selectSession）抢占的请求序号，两个请求共用一个守卫，
 // 避免 refreshSessionStatus 自己再 ++reqSeq 把上一条请求判成过期
@@ -703,6 +762,8 @@ async function refreshSessionStatus(id, my) {
       tag.textContent = `上下文已压缩 · 摘要 ${st.summary_chars} 字`;
       meta.appendChild(tag);
     }
+    // meta.textContent 刚被重置，用量徽标要补回来（否则每切一次会话就丢一次）
+    renderUsage();
   } catch (e) {
     $("chat-meta").textContent = "";
     console.error("加载会话状态失败", e);

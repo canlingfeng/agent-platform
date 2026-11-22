@@ -39,11 +39,32 @@ class ChatRequest(BaseModel):
         default_factory=list,
         description="多模态图片：base64 data URI 列表，仅当前模型支持图片时才有值",
     )
-    images:list[str] =Field(default_factory=list,description="多模态图片（base64 data URI），仅模型支持时传")
+class UsageInfo(BaseModel):
+    """用量快照：既能描述「本次请求」，也能描述「当日累计」。
+
+    字段含义（前端顶栏与限额提示共用这一份结构）：
+      turn_tokens      本次请求消耗的 token（流式路径按本轮增量累计）
+      used_tokens      今日已累计消耗
+      limit_tokens     每日 token 上限
+      used_requests    今日已用请求数
+      limit_requests   每日请求数上限
+      remaining_tokens 今日剩余额度（已做 0 下界钳制）
+      capped           True 表示本次请求因触及单次上限被提前中止
+    """
+    turn_tokens: int = 0
+    used_tokens: int = 0
+    limit_tokens: int = 0
+    used_requests: int = 0
+    limit_requests: int = 0
+    remaining_tokens: int = 0
+    capped: bool = False
+
 
 class ChatResponse(BaseModel):
     reply: str
     session_id: str
+    # 兼容旧客户端：没有用量信息时为 None，前端按需展示
+    usage: UsageInfo | None = None
 
 class MessageResponse(BaseModel):
     role: str

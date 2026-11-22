@@ -97,6 +97,16 @@ export async function getProviders() {
   return r.json();
 }
 
+// 今日用量：GET /api/v1/usage
+// → { used_tokens, limit_tokens, used_requests, limit_requests, remaining_tokens }
+// 只读、不消耗配额；user_id 由服务端从 JWT 取，前端不传（防横向越权）
+export async function getUsage() {
+  const r = await fetch("/api/v1/usage", { headers: authHeaders() });
+  if (r.status === 401) { clearToken(); throw new Error("登录已失效"); }
+  if (!r.ok) throw new Error("拉取用量失败 " + r.status);
+  return r.json();
+}
+
 // 切换模型：POST /api/v1/config → 新的运行配置
 // opts 仅 provider="custom" 时需要：{ baseUrl, model, apiKey }
 // 后端会热重建 LLM 并写回 config.json（重启后仍生效）
@@ -139,7 +149,9 @@ export async function chatSync(sessionId, message) {
 // onChunk 是回调：每收到一个增量片段就调用一次，app.js 拿它去更新界面。
 // onAsk 是回调：收到 ASK 挂起信号（payload.ask）时调用，参数为待确认命令，app.js 弹确认框。
 //   不入参也要给默认值 null —— 老调用方不需要 ASK 时传不传都不影响。
-export async function streamChat(sessionId, message, onChunk, images = [], signal = null, onAsk = null) {
+// onUsage 是回调：收到用量帧（payload.usage）时调用，参数含本次 token、今日累计与上限。
+//   同样给默认值 null，保持向后兼容（旧调用方不传也能正常跑）。
+export async function streamChat(sessionId, message, onChunk, images = [], signal = null, onAsk = null, onUsage = null) {
   const res = await fetch("/api/v1/chat/stream", {
     method: "POST",
     headers: authHeaders(),
@@ -176,11 +188,15 @@ export async function streamChat(sessionId, message, onChunk, images = [], signa
       try { payload = JSON.parse(raw); }              // ⑨ 后端把内容 JSON 编码成单行，原文空行不再切断帧
       catch { continue; }                             //   解析失败（极少见）跳过，避免渲染半个碎片
       if (payload.done) return;                       // ⑩ 结束标记（{"done":true}），收工
-      if (payload.ask !== undefined) {                // ⑪ ASK 挂起信号：把待确认命令交给上层弹框
+      if (payload.usage) {                            // ⑪ 用量帧：本次 token / 今日累计 / 上限
+        if (onUsage) onUsage(payload.usage);
+        continue;                                     //    用量帧不含正文，继续读下一帧
+      }
+      if (payload.ask !== undefined) {                // ⑫ ASK 挂起信号：把待确认命令交给上层弹框
         if (onAsk) onAsk(payload.ask);
         return;                                       //    确认框接管后续，本轮流结束
       }
-      if (typeof payload.t === "string") onChunk(payload.t);  // ⑫ 增量片段交给上层渲染
+      if (typeof payload.t === "string") onChunk(payload.t);  // ⑬ 增量片段交给上层渲染
     }
   }
 }

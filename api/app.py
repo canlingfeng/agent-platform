@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api import auth, chat, config, upload, rag
+from api import auth, chat, config, upload, rag, usage
 from core.agent import Agent
 from storage.checkpointer import build_checkpointer
 
@@ -63,6 +63,7 @@ app.include_router(chat.router)
 app.include_router(config.router)
 app.include_router(upload.router)
 app.include_router(rag.router)  
+app.include_router(usage.router)   # 用量查询（只读）：GET /api/v1/usage
 @app.get("/health")
 def health():
     return {"status": "ok"}
