@@ -4,15 +4,15 @@
 -- 字符集: utf8mb4 (MySQL 的 "utf8" 是 3 字节残废版, 存不了 emoji)
 -- ============================================================
 
-CREATE DATABASE IF NOT EXISTS agent_platform
-  DEFAULT CHARACTER SET utf8mb4
-  DEFAULT COLLATE utf8mb4_0900_ai_ci;
+create database if not exists agent_platform
+  default character set utf8mb4
+  default collate utf8mb4_0900_ai_ci;
 
-USE agent_platform;
-SET time_zone = '+00:00';
+use agent_platform;
+set time_zone = '+00:00';
 
 -- ---------- 1. 用户表 ----------
-CREATE TABLE IF NOT EXISTS users (
+create table if not exists users (
     id             bigint unsigned  not null auto_increment comment '内部主键: 聚簇索引, 顺序插入无页分裂',
     uuid           char(36)         not null                comment '对外 ID (UUIDv4): 防枚举 / 防 IDOR',
     username       varchar(255)     not null                comment '登录名, 唯一',
@@ -26,10 +26,10 @@ CREATE TABLE IF NOT EXISTS users (
     primary key (id),
     unique key uk_users_uuid (uuid),
     unique key uk_users_username (username)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='用户表';
+) engine=innodb default charset=utf8mb4 collate=utf8mb4_0900_ai_ci comment='用户表';
 
 -- ---------- 2. 会话表 ----------
-CREATE TABLE IF NOT EXISTS sessions (
+create table if not exists sessions (
     id             char(36)        not null                comment '会话 ID (UUIDv4): 同时作为 LangGraph thread_id',
     user_id        bigint unsigned not null                comment '归属用户: 多租户隔离键 (引用 users.id)',
     title          varchar(255)    not null default ''     comment '会话标题',
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     primary key (id),
     key idx_sessions_user (user_id, updated_at),
     constraint fk_sessions_user foreign key (user_id) references users (id) on delete cascade
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='会话表';
+) engine=innodb default charset=utf8mb4 collate=utf8mb4_0900_ai_ci comment='会话表';
 
 -- ---------- 3. 消息表 ----------
 -- ⚠️ 【预留未启用】全项目无任何 INSERT INTO messages / FROM messages。
@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- 三表承载（PyMySQLSaver.setup() 自动建），GET /sessions/{id}/messages 读的是
 -- graph.get_state()。本表 DDL 保留是为将来做独立分页/检索时直接接线，
 -- 含 seq 序号与 uk_messages_session_seq 唯一键。详见 docs/ARCHIVED.md 第三节。
-CREATE TABLE IF NOT EXISTS messages (
+create table if not exists messages (
     id            bigint unsigned not null auto_increment comment '内部主键',
     session_id    char(36)        not null                comment '所属会话 (引用 sessions.id = thread_id)',
     seq           int unsigned    not null                comment '会话内递增序号: 保证顺序 + 支持分页',
@@ -64,10 +64,10 @@ CREATE TABLE IF NOT EXISTS messages (
     primary key (id),
     unique key uk_messages_session_seq (session_id, seq),
     constraint fk_messages_session foreign key (session_id) references sessions (id) on delete cascade
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='消息表';
+) engine=innodb default charset=utf8mb4 collate=utf8mb4_0900_ai_ci comment='消息表';
 
 -- ---------- 4. 审计日志表 ----------
-CREATE TABLE IF NOT EXISTS audit_logs (
+create table if not exists audit_logs (
     id           bigint unsigned not null auto_increment comment '内部主键',
     user_id      bigint unsigned null                    comment '可为空: 未登录 / 系统级调用',
     session_id   char(36)        null                    comment '所属会话 (引用 sessions.id = thread_id)',
@@ -81,10 +81,10 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     key idx_audit_decision (decision, created_at),
     constraint fk_audit_user foreign key (user_id) references users (id) on delete set null,
     constraint fk_audit_session foreign key (session_id) references sessions (id) on delete set null
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='权限裁决审计表';
+) engine=innodb default charset=utf8mb4 collate=utf8mb4_0900_ai_ci comment='权限裁决审计表';
 
 -- ---------- 5. 配额配置表 ----------
-CREATE TABLE IF NOT EXISTS quotas (
+create table if not exists quotas (
     user_id                  bigint unsigned   not null comment '用户 ID, 同时作为主键 (与用户 1:1)',
     daily_token_limit        int unsigned      not null default 200000 comment '每日 token 上限',
     daily_request_limit      int unsigned      not null default 200    comment '每日请求上限',
@@ -94,10 +94,10 @@ CREATE TABLE IF NOT EXISTS quotas (
                              on update current_timestamp(3) comment '更新时间',
     primary key (user_id),
     constraint fk_quotas_user foreign key (user_id) references users (id) on delete cascade
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='用户配额表';
+) engine=innodb default charset=utf8mb4 collate=utf8mb4_0900_ai_ci comment='用户配额表';
 
 -- ---------- 6. 每日用量表 ----------
-CREATE TABLE IF NOT EXISTS usage_daily (
+create table if not exists usage_daily (
     id            bigint unsigned not null auto_increment comment '内部主键',
     user_id       bigint unsigned not null                comment '用户 ID',
     usage_date    date            not null                comment 'UTC 日期',
@@ -110,5 +110,19 @@ CREATE TABLE IF NOT EXISTS usage_daily (
     primary key (id),
     unique key uk_usage_user_date (user_id, usage_date),
     constraint fk_usage_user foreign key (user_id) references users (id) on delete cascade
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='每日用量统计表';
+) engine=innodb default charset=utf8mb4 collate=utf8mb4_0900_ai_ci comment='每日用量统计表';
 
+-- ---------- 7. 命令确认挂起表 ----------
+-- ASK 三态的安全闸：Agent 产生 NEED_CONFIRM 时 register 登记 (session, user, command) 并
+-- 签发一次性 token；/chat/confirm 必须 consume (四元组全匹配, 校验即删除) 才放行执行。
+-- 修复点：没有这张表时，任何登录用户可直接 POST decision=allow 绕过确认弹框执行任意命令。
+create table if not exists confirm_pending (
+    token      char(43)        not null                comment '一次性凭据: secrets.token_urlsafe(32) 固定生成 43 字符, 定长 char 更省主键索引',
+    session_id char(36)        not null                comment '所属会话 (引用 sessions.id): 外键类型/符号必须与被引用列一致',
+    user_id    bigint unsigned not null                comment '归属用户 (引用 users.id): token 换人/换会话即无效',
+    command    text            not null                comment '登记时的命令原文: consume 时全等比对, 防偷换命令',
+    created_at datetime(3)     not null default current_timestamp(3) comment '登记时间: 超时(10 分钟)可在 register 时顺手清理作废',
+    primary key (token),
+    constraint fk_confirm_session foreign key (session_id) references sessions (id) on delete cascade,
+    constraint fk_confirm_user foreign key (user_id) references users (id) on delete cascade
+) engine=innodb default charset=utf8mb4 collate=utf8mb4_0900_ai_ci comment='ASK 挂起登记表: 一次性 token 防绕过确认';

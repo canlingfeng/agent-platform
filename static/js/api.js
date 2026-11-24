@@ -199,7 +199,7 @@ export async function streamChat(sessionId, message, onChunk, images = [], signa
         continue;                                     //    不含正文，继续读下一帧
       }
       if (payload.ask !== undefined) {                // ⑬ ASK 挂起信号：把待确认命令交给上层弹框
-        if (onAsk) onAsk(payload.ask);
+        if (onAsk) onAsk(payload.ask,payload.token);
         return;                                       //    确认框接管后续，本轮流结束
       }
       if (typeof payload.t === "string") onChunk(payload.t);  // ⑭ 增量片段交给上层渲染
@@ -209,12 +209,14 @@ export async function streamChat(sessionId, message, onChunk, images = [], signa
 
 // ASK 三态确认：POST /api/v1/chat/confirm → { result }
 // decision 为 "allow" 时后端才会真正执行命令；其它值（含 "deny"）后端返回"用户拒绝执行命令"。
+// token：NEED_CONFIRM 挂起时服务端签发的一次性凭据（ask 帧下发），必须原样带回——
+// 后端按 (token, session, user, command) 四元组核销，缺了/错了/用过都 403。
 // 返回 { result }，app.js 把命令输出作为一条 AI 消息追加（方案 A：简单、可审计）。
-export async function confirmCommand(sessionId, command, decision) {
+export async function confirmCommand(sessionId, command, decision, token) {
   const r = await fetch("/api/v1/chat/confirm", {
     method: "POST",
     headers: authHeaders(),
-    body: JSON.stringify({ session_id: sessionId, command, decision }),
+    body: JSON.stringify({ session_id: sessionId, command, decision, token }),
   });
   if (!r.ok) {
     // 后端 403（命令被 DENY）/ 404（会话越权）/ 其它：把 message 提出来抛给界面

@@ -21,10 +21,12 @@ DB_CONFIG = {
 # - ping=1：借出前 ping 一下，自动剔除已被 MySQL 空闲超时断开的连接；
 # - 借出的连接调 close() 是"归还池"（PooledDB 包装），并非真关闭。
 #
-# 惰性建池（C-1）：旧写法在 import 期就 PooledDB(mincached=2) 建连，带来两个问题：
-#   1. CI / 离线跑 pytest 时没有 MySQL → import storage.db 直接崩，所有相关测试全挂；
-#   2. 容器启动期 MySQL 还没就绪 → FastAPI app 导入即失败，重启风暴。
-# 改为：import 期只锁好配置，首次 get_conn() 才真正建池（双检锁保证只建一次）。
+# 惰性建池（C-1 前置改造）：import 本模块不再产生任何网络副作用。
+#   旧写法在 import 期就 PooledDB(mincached=2) 建连，导致：
+#     1) CI / 测试环境没有 MySQL，任何间接 import 本模块的测试在收集期就炸；
+#     2) 容器编排里 app 可能比 db 先就绪，import 期建池让服务直接启动失败。
+#   改为首次 get_conn() 时才建池；双检锁保证并发下只建一次。
+
 _lock = threading.Lock()
 _pool = None
 

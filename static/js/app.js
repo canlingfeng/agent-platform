@@ -351,9 +351,10 @@ async function send() {
       // 用户向上翻历史时不抢滚动条：只有原本贴底才跟随新内容。
       if (stickToBottom) $("messages").scrollTop = $("messages").scrollHeight;
       updateJumpButton();
-    }, images, state.controller.signal, (cmd) => {
-      // ASK 三态：收到待确认命令 → 弹确认框（cmd 为待执行的系统命令）
-      showConfirmModal(cmd, sid);
+    }, images, state.controller.signal, (cmd, token) => {
+      // ASK 三态：收到待确认命令 + 一次性 token → 弹确认框
+      // token 是服务端签发的确认凭据，必须暂存并在用户表态时原样带回
+      showConfirmModal(cmd, sid, token);
     }, (u) => {
       // 用量帧：刷新顶栏「本次 / 今日」，被单次上限截断时在气泡末尾补一行提示
       applyUsage(u, sid, aiId);
@@ -405,12 +406,12 @@ function setSendButton(isStreaming) {
 
 // ==================== ASK 三态确认框 ====================
 
-// 当前待确认的命令 + 会话（模块级，供"允许 / 拒绝"两个按钮共用）
-let confirmState = null;  // { cmd, sid }
+// 当前待确认的命令 + 会话 + 一次性凭据（模块级，供"允许 / 拒绝"两个按钮共用）
+let confirmState = null;  // { cmd, sid, token }
 
 // 弹出确认框：展示待执行命令，等待用户允许 / 拒绝
-function showConfirmModal(cmd, sid) {
-  confirmState = { cmd, sid };
+function showConfirmModal(cmd, sid, token) {
+  confirmState = { cmd, sid, token };
   $("confirm-cmd").textContent = cmd;
   $("confirm-modal").hidden = false;
 }
@@ -426,13 +427,13 @@ function closeConfirmModal() {
 async function onAskConfirm(decision) {
   // 防卡死：弹窗可见但状态丢失（如异常时序）也要能关掉，不能让按钮变摆设
   if (!confirmState) { closeConfirmModal(); return; }
-  const { cmd, sid } = confirmState;
+  const { cmd, sid, token } = confirmState;
   closeConfirmModal();
   // 先放一条占位 AI 气泡，执行完再填结果（命令执行可能耗时，给即时反馈）
   scrollToLatest();                    // 确认动作是主动意图，回到最新消息
   const aiId = addMessage("ai", "⏳ 正在执行命令…");
   try {
-    const data = await api.confirmCommand(sid, cmd, decision);
+    const data = await api.confirmCommand(sid, cmd, decision, token);
     $(aiId).textContent = `[命令] ${cmd}\n${data.result}`;
   } catch (e) {
     $(aiId).textContent = "[错误] " + e.message;

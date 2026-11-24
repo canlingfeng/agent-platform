@@ -39,6 +39,7 @@ from api.schemas import (
 )
 
 from storage import user_store
+from storage import confirm_registry
 from storage.session import Session
 
 router = APIRouter(prefix="/api/v1", tags=["chat"])
@@ -285,6 +286,31 @@ async def chat_stream(req: ChatRequest, request: Request,
         ask_pending = False     # 标记本轮是否因 ASK 挂起（挂起时不再发 done，交由前端弹框接管）
         capped = False          # 标记本轮是否因触及单次 token 上限被提前中止
 
+        def _compress_after_stream():
+            """
+            流式收尾压缩（#2）：把窗口外消息摘要进 sess.summary 并落库。
+            为什么放 producer 线程：_compress 内部要调 call_llm（同步 HTTP，
+            可能几秒），放 async 侧会阻塞事件循环、拖慢同进程其他请求。
+            为什么吞异常：摘要是尽力而为的旁路，失败不能影响本轮对话结果。
+            为什么 ask 挂起 / capped 早退路径也要压缩：消息已进 checkpoint，
+            不压缩这些消息就变成"只丢不摘"，长期记忆照样失效。
+            """ 
+            try:
+                state=agent.graph.get_state(config)
+                msg=state.values.get("messages", []) if state and state.values else []
+                if len(msg)<=agent.max_history:
+                    return
+                # 窗口外 = 最旧的 len-max_history 条（切片从头取到分界点）；
+                # 写成 msg[len-max_history:] 会取到最新 20 条，把近期上下文摘要掉、旧消息留下。
+                evicted=msg[:len(msg)-agent.max_history]
+                before= sess.summary
+                agent._compress(sess, agent._messages_to_history(evicted))
+                if sess.summary and sess.summary != before:
+                    user_store.update_session_summary(req.session_id, sess.summary)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "流式收尾压缩失败（不影响本轮结果）")
+
         def producer():
             nonlocal total_tokens, capped
             # 身份必须在这里注入：graph.stream 在本线程内同步执行，
@@ -332,8 +358,13 @@ async def chat_stream(req: ChatRequest, request: Request,
                             if (mtype == "tool" and isinstance(content, str)
                                     and content.startswith("NEED_CONFIRM:")):
                                 cmd = content[len("NEED_CONFIRM:"):]
+                                # 修复 #1（confirm 绕过）：挂起必须在服务端登记并签发
+                                # 一次性 token。凭据从"公开可猜的命令原文"换成
+                                # "密码学随机串 + 服务端可验证"，前端确认时必须原样带回。
+                                token = confirm_registry.register(
+                                    req.session_id, user["id"], cmd)
                                 asyncio.run_coroutine_threadsafe(
-                                    queue.put({"ask": cmd}), loop)
+                                    queue.put({"ask": cmd, "token": token}), loop)
                                 return
                             if content and mtype == "ai":
                                 asyncio.run_coroutine_threadsafe(queue.put(content), loop)
@@ -344,6 +375,7 @@ async def chat_stream(req: ChatRequest, request: Request,
                 )
             finally:
                 reset_identity(token)
+                _compress_after_stream() 
                 asyncio.run_coroutine_threadsafe(queue.put(None), loop)
 
         # 修复假流式：用 run_in_executor 把 producer 调度到线程池，但【不立刻 await 它】。
@@ -380,7 +412,9 @@ async def chat_stream(req: ChatRequest, request: Request,
                         yield "data: " + json.dumps(
                             {"usage": _usage_payload(user["id"], total_tokens, False)},
                             ensure_ascii=False) + "\n\n"
-                        yield "data: " + json.dumps({"ask": item["ask"]}, ensure_ascii=False) + "\n\n"
+                        yield "data: " + json.dumps(
+                            {"ask": item["ask"], "token": item["token"]},
+                            ensure_ascii=False) + "\n\n"
                         ask_pending = True
                         break
                     # JSON 编码成单行：AI 原文里的 \n\n 会变成转义符 \n，
@@ -417,10 +451,15 @@ async def chat_stream(req: ChatRequest, request: Request,
 
 
 class ConfirmRequest(BaseModel):
-    """ASK 三态的确认请求：用户对一条"需确认命令"给出允许 / 拒绝。"""
+    """ASK 三态的确认请求：用户对一条"需确认命令"给出允许 / 拒绝。
+
+    token：NEED_CONFIRM 挂起时服务端签发的一次性凭据（随 {"ask"} 帧下发），
+    确认时必须原样带回。没有它 = 请求不是走过挂起流程的，直接 403。
+    """
     session_id: str
     command: str
     decision: str   # "allow" 为允许；其它值（含 "deny"）一律视为拒绝（fail-closed）
+    token: str
 
 
 @router.post("/chat/confirm")
@@ -449,10 +488,20 @@ def chat_confirm(req: ConfirmRequest, request: Request,
         client_ip=request.client.host if request.client else None))
     try:
         # 安全闸：重跑裁决，DENY 一律 403，不允许用 approve=True 强行绕过。
+        # 闸门顺序契约（tests/test_confirm_guard.py 锁死）：decide 在 consume 之前，
+        # 否则攻击者可用"错命令+错 token"探测登记表状态（侧信道）。
         if decide("execute_command", {"command": req.command}) == DENY:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="命令被拒绝：命中黑名单或包含危险字符")
+        # 修复 #1：凭据核销闸。四元组 (token, session, user, command) 全匹配才放行，
+        # 校验即删除（原子）——没有登记过 / 已消费过 / 偷换命令 / 换会话换人，全部 403。
+        # 放在 decision 判断之前：无论允许还是拒绝，凭据都作废，一次挂起只有一次表态机会。
+        if not confirm_registry.consume(req.token, req.session_id,
+                                        user["id"], req.command):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="确认凭据无效或已过期")
         # 用户拒绝（含非 "allow" 的任意值）→ 不执行，fail-closed。
         if req.decision != "allow":
             return {"result": "用户拒绝执行命令"}
